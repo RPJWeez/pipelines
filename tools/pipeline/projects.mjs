@@ -51,7 +51,9 @@ export function projectPlan({
     let argv, label;
     if (targets.ci) {
       argv = ["npx", "nx", "run", `${name}:ci`];
-      label = targets.ci.metadata?.description || `Build/Test - ${name}`;
+      label = targets.ci.metadata?.description
+        ? `${targets.ci.metadata.description} - ${name}`
+        : `Build/Test - ${name}`;
     } else if (mavenRoots.includes(root)) {
       argv = ["./mvnw", "-B", "-ntp", "-pl", root, "-am", "verify"];
       label = `Build/Test - ${name}`;
@@ -107,6 +109,11 @@ export function projectPlan({
     new Set(jobs.map((j) => j.id)).size,
     jobs.length,
     "duplicate project/check names",
+  );
+  assert.equal(
+    new Set(jobs.map((job) => job.label)).size,
+    jobs.length,
+    "project job labels must be unique",
   );
   const images = all
     .filter((target) => {

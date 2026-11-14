@@ -51,7 +51,8 @@ There is no service matrix in the reusable workflow or app caller.
 The planner reads the app's native Nx graph and Docker/Bake `application` group:
 
 - A native `ci` target is an explicit per-project check. Its optional
-  `metadata.description` supplies a human-readable job name.
+  `metadata.description` supplies a human-readable prefix; the project name is always
+  included so repeated descriptions cannot hide distinct projects.
 - Maven source modules run `./mvnw -pl <project-root> -am verify`, named
   `Build/Test - <project>`. This uses the native reactor, not Nx's experimental Maven
   lifecycle executor. Dependencies build from the same checkout in each isolated job.

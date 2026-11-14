@@ -37,7 +37,7 @@ test("affected library and service produce named independent native jobs and onl
     [
       "Build/Test - money-core",
       "Build/Test - orders",
-      "Test - Repository contracts",
+      "Test - Repository contracts - workspace",
     ],
   );
   assert.deepEqual(
@@ -309,4 +309,22 @@ test("image aggregation rejects missing, duplicate and inconsistent native build
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("repeated native ci descriptions still name their distinct projects", () => {
+  const graph = {
+    nodes: {
+      first: node("services/first", {
+        ci: { metadata: { description: "Test" } },
+      }),
+      second: node("services/second", {
+        ci: { metadata: { description: "Test" } },
+      }),
+    },
+  };
+  const p = projectPlan({ graph, bake });
+  assert.deepEqual(
+    p.projectJobs.map((j) => j.label),
+    ["Test - first", "Test - second"],
+  );
 });
