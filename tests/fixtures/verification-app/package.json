@@ -1,0 +1,7 @@
+{
+  "name": "verification-app",
+  "private": true,
+  "scripts": {
+    "verify": "node verify.mjs"
+  }
+}

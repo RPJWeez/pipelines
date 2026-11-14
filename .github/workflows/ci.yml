@@ -1,0 +1,24 @@
+name: Pipeline tests
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: "22.22.0", cache: npm }
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with: { version: v3.18.4 }
+      - run: npm ci
+      - run: npm test
+      - run: npm run format:check
+      - name: Build shared verification toolchain
+        run: docker build -f verification/Dockerfile -t application-verification:test .
+      - name: Exercise app mount and native verification hook
+        run: |
+          docker run --rm -v "$PWD/tests/fixtures/verification-app:/source:ro" application-verification:test

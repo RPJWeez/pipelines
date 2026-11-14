@@ -1,0 +1,28 @@
+{
+  "neverConnectToCloud": true,
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "cache": true,
+      "inputs": ["default", "^default"],
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "cache": true,
+      "inputs": ["default", "^default"]
+    },
+    "mvn-package": {
+      "cache": true
+    },
+    "container": {
+      "inputs": ["default", "^default"]
+    },
+    "chart-package": {
+      "inputs": ["default", "^default"]
+    },
+    "mvn-verify": {
+      "inputs": ["default", "^default"]
+    }
+  }
+}
