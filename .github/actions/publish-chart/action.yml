@@ -4,13 +4,15 @@ inputs:
   project:
     required: false
     description: Nx project identifier for reporting
-  chart: { required: true, description: Chart directory }
+  chart:
+    required: true
+    description: Chart directory
   registry:
-    {
-      required: true,
-      description: "OCI registry parent path, e.g. ghcr.io/owner/charts",
-    }
-  token: { required: true, description: Package publishing token }
+    required: true
+    description: OCI registry parent path, e.g. ghcr.io/owner/charts
+  token:
+    required: true
+    description: Package publishing token
 outputs:
   package:
     value: ${{ steps.package.outputs.package }}
@@ -25,7 +27,8 @@ runs:
   using: composite
   steps:
     - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
-      with: { version: v3.18.4 }
+      with:
+        version: v3.18.4
     - name: Publish or reuse identical content
       id: package
       shell: bash
@@ -100,15 +103,17 @@ runs:
         output-file: .work/charts/chart.spdx.json
         upload-artifact: false
     - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
-      with: { subject-path: "${{ steps.package.outputs.package }}" }
+      with:
+        subject-path: ${{ steps.package.outputs.package }}
+        show-summary: false
     - uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
       with:
-        {
-          subject-path: "${{ steps.package.outputs.package }}",
-          sbom-path: .work/charts/chart.spdx.json,
-        }
-    - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
-      with: { cosign-release: v3.1.4 }
+        subject-path: ${{ steps.package.outputs.package }}
+        sbom-path: .work/charts/chart.spdx.json
+        show-summary: false
+    - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      with:
+        cosign-release: v3.1.4
     - name: Sign OCI chart digest
       shell: bash
       env:

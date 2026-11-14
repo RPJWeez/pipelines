@@ -26,15 +26,12 @@ test("each helper consumer checks out the exact reusable workflow source before 
     assert(!JSON.stringify(job).includes("uses: ./.github/actions/"));
   }
 });
-test("reusable interface uses an app-native command and complete native image inventory", () => {
+test("reusable interface uses native project matrices and complete native image inventory", () => {
   assert(workflow.on.workflow_call);
+  assert.equal(workflow.on.workflow_call.inputs["verify-command"].default, "");
   assert.equal(
-    workflow.on.workflow_call.inputs["verify-command"].default,
-    "npm run verify",
-  );
-  assert.equal(
-    workflow.jobs.validate.strategy.matrix.include[0].command,
-    "${{ inputs.verify-command }}",
+    workflow.jobs.validate.strategy.matrix.include,
+    "${{ fromJSON(needs.plan.outputs.checks) }}",
   );
   const content = JSON.stringify(workflow);
   assert(!content.includes("fieldsignal"));
