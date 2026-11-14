@@ -66,3 +66,35 @@ test("candidate verification pins both platform signer revision and caller sourc
     assert(line.includes('--repo "$GITHUB_REPOSITORY"'));
   }
 });
+
+test("platform toolchain config resolves from its own package outside the app checkout", async () => {
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-config-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "tools/pipeline"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, "tools/pipeline/config.json"),
+      '{"javaVersion":"untrusted-app-setting"}',
+    );
+    const output = path.join(cwd, "outputs");
+    execFileSync(
+      process.execPath,
+      [path.resolve("tools/pipeline/config.mjs")],
+      { cwd, env: { ...process.env, GITHUB_OUTPUT: output } },
+    );
+    assert.match(fs.readFileSync(output, "utf8"), /javaVersion=21/);
+    assert(!fs.readFileSync(output, "utf8").includes("untrusted-app-setting"));
+    const binding = workflow.jobs["publish-chart"].steps.find(
+      (s) => s.name === "Bind native outputs and verify trusted image evidence",
+    );
+    assert(
+      binding.run.includes(
+        "process.env.DELIVERY_ROOT+'/node_modules/yaml/dist/index.js'",
+      ),
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
