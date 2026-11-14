@@ -887,3 +887,158 @@ test("nested GHCR links use the repository package route for candidates and imag
     );
     assert.doesNotMatch(md, /github.com\/(users|orgs)\/|%252F/);
   }));
+
+for (const event of ["pull_request", "push"])
+  test(`shared ${event} report recognizes nested jobs and complete app verification`, () =>
+    temporary((cwd) => {
+      const env = {
+        GITHUB_EVENT_NAME: event,
+        VALIDATION_COMMAND: "npm run verify",
+        JOB_RESULTS: JSON.stringify({
+          plan: { result: "success" },
+          validate: { result: "success" },
+          ci: { result: "success" },
+          "container-validate": {
+            result: event === "pull_request" ? "success" : "skipped",
+          },
+          "publish-images": {
+            result: event === "push" ? "success" : "skipped",
+          },
+          "image-evidence": {
+            result: event === "push" ? "success" : "skipped",
+          },
+          "publish-chart": { result: event === "push" ? "failure" : "skipped" },
+        }),
+      };
+      planFixture(cwd, env, {
+        verification: { mode: "complete", command: "npm run verify" },
+        validation: {},
+        reasons: {},
+        files: [],
+        direct: [],
+      });
+      write(
+        cwd,
+        ".work/validation.log",
+        [
+          "# tests 7",
+          "# pass 7",
+          "[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- in app.ServiceTest",
+          "[INFO] BUILD SUCCESS",
+          "\u001b[32m✔\u001b[39m nx run web:build",
+          "Cache: 0/5 hit (0%)",
+          "1 chart(s) linted, 0 chart(s) failed",
+        ].join("\n"),
+      );
+      run(
+        cwd,
+        "tools/pipeline/report.mjs",
+        ["validation", "Source verification", "success", ""],
+        env,
+      );
+      const names = [
+        ["Plan complete application build", "success"],
+        ["Source verification", "success"],
+        ["Container source build", event === "push" ? "skipped" : "success"],
+        ["Validation complete", "success"],
+      ];
+      if (event === "push")
+        names.push(
+          ["Publish complete image set", "success"],
+          ["image-evidence (api)", "success"],
+          ["Publish complete candidate; QA pending", "failure"],
+        );
+      write(
+        cwd,
+        ".work/jobs.json",
+        JSON.stringify({
+          jobs: names.map(([name, conclusion], i) => ({
+            name: `outer / delivery / ${name}`,
+            conclusion,
+            id: i + 1,
+            html_url: `https://example.test/job/${i + 1}`,
+            steps:
+              conclusion === "failure"
+                ? [
+                    {
+                      name: "Publish or reuse identical content",
+                      conclusion: "failure",
+                    },
+                  ]
+                : [],
+          })),
+        }),
+      );
+      run(cwd, "tools/pipeline/report.mjs", ["summary"], env);
+      const md = fs.readFileSync(path.join(cwd, ".work/summary.md"), "utf8");
+      assert.match(
+        md,
+        /Source verification.*Passed.*npm run verify.*https:\/\/example.test\/job\/2/,
+      );
+      assert.match(md, /Plan complete application build.*Passed/);
+      assert.match(md, /# tests 7/);
+      assert.match(md, /ServiceTest/);
+      assert.match(md, /web:build/);
+      assert.match(md, /Cache: 0\/5 hit/);
+      assert.match(md, /1 chart\(s\) linted/);
+      assert.match(md, /## Downloads and evidence/);
+      assert.match(md, /no affected-project selection is used/);
+      assert.doesNotMatch(
+        md,
+        /No affected projects were selected|Plan affected work|Java — compile|Frontend — build|Pipeline and Helm regression tests|❔ Unavailable/,
+      );
+      assert(!md.includes("\u001b"));
+      if (event === "push") {
+        assert.match(
+          md,
+          /Image signatures, provenance and SBOMs \(api\).*Passed.*https:\/\/example.test\/job\/6/,
+        );
+        assert.match(
+          md,
+          /Publish complete candidate; QA pending.*Failed.*Publish or reuse identical content.*https:\/\/example.test\/job\/7/,
+        );
+        assert.match(md, /publication failed/);
+        assert.match(md, /No complete candidate handoff/);
+        assert.match(md, /PR-only check; main builds images/);
+      }
+    }));
+
+test("shared setup failure reports native hook failure without claiming any test execution", () =>
+  temporary((cwd) => {
+    const env = {
+      GITHUB_EVENT_NAME: "pull_request",
+      JOB_RESULTS: JSON.stringify({
+        validate: { result: "failure" },
+        ci: { result: "failure" },
+      }),
+    };
+    planFixture(cwd, env, {
+      verification: { mode: "complete", command: "npm run verify" },
+      validation: {},
+      reasons: {},
+    });
+    write(
+      cwd,
+      ".work/jobs.json",
+      JSON.stringify({
+        jobs: [
+          {
+            name: "delivery / Source verification",
+            conclusion: "failure",
+            html_url: "https://example.test/setup",
+            steps: [{ name: "Install toolchain", conclusion: "failure" }],
+          },
+        ],
+      }),
+    );
+    run(cwd, "tools/pipeline/report.mjs", ["summary"], env);
+    const md = fs.readFileSync(path.join(cwd, ".work/summary.md"), "utf8");
+    assert.match(
+      md,
+      /Source verification.*Failed.*Install toolchain.*https:\/\/example.test\/setup/,
+    );
+    assert.doesNotMatch(
+      md,
+      /### Build and test output|# pass|No affected projects were selected/,
+    );
+  }));

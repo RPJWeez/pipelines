@@ -105,6 +105,24 @@ if (command === "record") {
   const log = fs.existsSync(".work/validation.log")
     ? fs.readFileSync(".work/validation.log", "utf8")
     : "";
+  const plainLog = log
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replaceAll("\r", "");
+  // Preserve bounded native-tool evidence, including cache disclosures. These are
+  // output excerpts, not independent per-test execution/certification claims.
+  const evidence = plainLog
+    .split("\n")
+    .filter(
+      (line) =>
+        /^(?:# (?:tests|pass|fail|skipped)\b|\[INFO\] Tests run:.* -- in |\[INFO\] BUILD (?:SUCCESS|FAILURE))/.test(
+          line,
+        ) ||
+        /(?:[✔✖].*nx run|NX\s+Successfully ran|Cache:\s+\d+\/\d+|\d+ chart\(s\) linted)/.test(
+          line,
+        ),
+    )
+    .slice(0, 40)
+    .map((line) => line.trim().slice(0, 400));
   const failures = [...log.matchAll(/^(?:# )?not ok \d+ - (.+)$/gm)].map(
     (match) => match[1],
   );
@@ -115,6 +133,8 @@ if (command === "record") {
     lint,
     failures,
     diagnosticsArtifact: process.env.VALIDATION_ARTIFACT || "",
+    command: process.env.VALIDATION_COMMAND || "",
+    evidence,
   });
 } else if (command === "release-links") {
   const notices = [];
@@ -170,7 +190,13 @@ if (command === "record") {
   const jobs = JSON.parse(process.env.JOB_RESULTS || "{}");
   let jobDetails = [];
   try {
-    jobDetails = JSON.parse(fs.readFileSync(".work/jobs.json")).jobs || [];
+    jobDetails = (
+      JSON.parse(fs.readFileSync(".work/jobs.json")).jobs || []
+    ).map((job) => ({
+      ...job,
+      displayName: job.name,
+      name: job.name.split(" / ").at(-1),
+    }));
   } catch {
     /* Aggregate results remain available. */
   }
@@ -276,6 +302,10 @@ if (command === "record") {
   ].some((name) => ["failure", "cancelled"].includes(jobs[name]?.result));
   const validationState = jobs.ci?.result || jobs.validate?.result || "unknown";
   const failed = validationState === "failure";
+  const completeVerification =
+    plan?.verification?.mode === "complete" ||
+    validations.some((record) => record.name === "Source verification") ||
+    jobDetails.some((job) => job.name === "Source verification");
   const headline =
     validationState === "success"
       ? "Validation passed"
@@ -313,16 +343,25 @@ if (command === "record") {
     "| Check | Result | Details |",
     "|---|---|---|",
   ];
-  const checkNames = [
-    "Plan affected work",
-    "Java — compile, test, package",
-    "Frontend — build and typecheck",
-    "Container source build",
-    "Pipeline and Helm regression tests",
-    "Validation complete",
-  ];
+  const checkNames = completeVerification
+    ? [
+        "Plan complete application build",
+        "Source verification",
+        "Container source build",
+        "Validation complete",
+      ]
+    : [
+        "Plan affected work",
+        "Java — compile, test, package",
+        "Frontend — build and typecheck",
+        "Container source build",
+        "Pipeline and Helm regression tests",
+        "Validation complete",
+      ];
   const aggregate = {
     "Plan affected work": "plan",
+    "Plan complete application build": "plan",
+    "Source verification": "validate",
     "Validation complete": "ci",
     "Container source build": "container-validate",
     "Publish complete image set": "publish-images",
@@ -372,7 +411,9 @@ if (command === "record") {
             : "A required earlier stage did not complete."
           : noAffectedWork
             ? "No affected source projects; no compilation or tests needed in this job."
-            : "View logs";
+            : name === "Source verification"
+              ? `App-native build/test checks: ${escape(record?.command || plan?.verification?.command || "see command in logs")}`
+              : "View logs";
     lines.push(
       `| ${escape(name.replace(/^image-evidence/, "Image signatures, provenance and SBOMs"))} | ${status(result)} | [${explanation}](${url}) |`,
     );
@@ -392,6 +433,27 @@ if (command === "record") {
       "",
       "Fix the failed check above; the validation gate reflects that failure.",
     );
+  }
+  const nativeEvidence = validations.filter(
+    (record) => record.evidence?.length,
+  );
+  if (nativeEvidence.length) {
+    lines.push(
+      "",
+      "### Build and test output",
+      "",
+      "Native command output below includes task-cache results when reused; it is not runtime QA.",
+    );
+    for (const record of nativeEvidence) {
+      lines.push(
+        "",
+        `**${escape(record.name)}**`,
+        "",
+        "<pre>",
+        ...record.evidence.map(escape),
+        "</pre>",
+      );
+    }
   }
   if (!isPR) {
     lines.push("", "## Publication", "");
@@ -536,80 +598,96 @@ if (command === "record") {
         lines.push(`  - ${linked(asset.name, asset.url)}`);
     }
   }
-  lines.push(
-    "",
-    "<details><summary>Why checks were selected and which files changed</summary>",
-    "",
-  );
-  lines.push(
-    "",
-    "## Affected projects",
-    "",
-    "This is the work selected for validation. Selection does not mean an artifact was published.",
-    "",
-  );
-  if (!plan)
-    lines.push(
-      "The selection plan is unavailable. Check “Plan affected work” above.",
-    );
-  else {
-    const projects = [
-      ...new Set([
-        ...Object.keys(plan.reasons || {}),
-        ...Object.values(plan.validation || {}).flat(),
-      ]),
-    ];
-    if (!projects.length)
-      lines.push(
-        "No affected projects were selected. Workspace regression tests still run.",
-      );
-    else {
-      lines.push(
-        "| Project | Checks planned | Why included |",
-        "|---|---|---|",
-      );
-      for (const project of projects) {
-        const checks = Object.entries(plan.validation || {})
-          .filter(([, names]) => names.includes(project))
-          .map(
-            ([target]) =>
-              ({
-                java: "Java compilation, tests, packaging",
-                build: "Build",
-                typecheck: "TypeScript checks",
-              })[target],
-          );
-        const reason = plan.direct?.includes(project)
-          ? "Files changed in this project"
-          : plan.reasons?.[project]?.includes(" → ")
-            ? `Depends on changed project: ${plan.reasons[project].split(" → ").slice(1).join(" → ")}`
-            : plan.sharedFiles?.length
-              ? `Shared build/pipeline inputs changed (${plan.sharedFiles.length} files)`
-              : "Selected by Nx dependency/input analysis";
-        lines.push(
-          `| ${escape(project)} | ${escape(checks.join("; ") || "Workspace/Helm checks")} | ${escape(reason)} |`,
-        );
-      }
-    }
-    const reason =
-      {
-        "pr-target": "PR target branch commit",
-        "last-successful-main-workflow": "Last fully successful main workflow",
-        "bootstrap-empty-tree":
-          "First publication: compare with an empty repository",
-      }[plan.reason] || plan.reason;
+  if (completeVerification) {
     lines.push(
       "",
-      "<details><summary>Comparison and changed files</summary>",
+      "<details><summary>Verification scope</summary>",
       "",
-      `${escape(reason)}: \`${escape(plan.base)}\` → \`${escape(plan.head)}\``,
+      "The app-native verification command covers the complete application. Native task caches may reuse valid outputs; no affected-project selection is used.",
       "",
-      ...(plan.files || []).map((file) => `- \`${escape(file)}\``),
+      `Command: \`${escape(validations.find((record) => record.name === "Source verification")?.command || plan?.verification?.command || "see source-verification logs")}\``,
+      "",
+      `Application image inventory: ${escape((plan?.selected?.images || []).join(", ") || "unavailable")}.`,
       "",
       "</details>",
     );
+  } else {
+    lines.push(
+      "",
+      "<details><summary>Why checks were selected and which files changed</summary>",
+      "",
+    );
+    lines.push(
+      "",
+      "## Affected projects",
+      "",
+      "This is the work selected for validation. Selection does not mean an artifact was published.",
+      "",
+    );
+    if (!plan)
+      lines.push(
+        "The selection plan is unavailable. Check “Plan affected work” above.",
+      );
+    else {
+      const projects = [
+        ...new Set([
+          ...Object.keys(plan.reasons || {}),
+          ...Object.values(plan.validation || {}).flat(),
+        ]),
+      ];
+      if (!projects.length)
+        lines.push(
+          "No affected projects were selected. Workspace regression tests still run.",
+        );
+      else {
+        lines.push(
+          "| Project | Checks planned | Why included |",
+          "|---|---|---|",
+        );
+        for (const project of projects) {
+          const checks = Object.entries(plan.validation || {})
+            .filter(([, names]) => names.includes(project))
+            .map(
+              ([target]) =>
+                ({
+                  java: "Java compilation, tests, packaging",
+                  build: "Build",
+                  typecheck: "TypeScript checks",
+                })[target],
+            );
+          const reason = plan.direct?.includes(project)
+            ? "Files changed in this project"
+            : plan.reasons?.[project]?.includes(" → ")
+              ? `Depends on changed project: ${plan.reasons[project].split(" → ").slice(1).join(" → ")}`
+              : plan.sharedFiles?.length
+                ? `Shared build/pipeline inputs changed (${plan.sharedFiles.length} files)`
+                : "Selected by Nx dependency/input analysis";
+          lines.push(
+            `| ${escape(project)} | ${escape(checks.join("; ") || "Workspace/Helm checks")} | ${escape(reason)} |`,
+          );
+        }
+      }
+      const reason =
+        {
+          "pr-target": "PR target branch commit",
+          "last-successful-main-workflow":
+            "Last fully successful main workflow",
+          "bootstrap-empty-tree":
+            "First publication: compare with an empty repository",
+        }[plan.reason] || plan.reason;
+      lines.push(
+        "",
+        "<details><summary>Comparison and changed files</summary>",
+        "",
+        `${escape(reason)}: \`${escape(plan.base)}\` → \`${escape(plan.head)}\``,
+        "",
+        ...(plan.files || []).map((file) => `- \`${escape(file)}\``),
+        "",
+        "</details>",
+      );
+    }
+    lines.push("", "</details>");
   }
-  lines.push("", "</details>");
   if (notices.length)
     lines.push(
       "",

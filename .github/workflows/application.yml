@@ -45,6 +45,8 @@ jobs:
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
       - name: Read native application inventory
         id: select
+        env:
+          VERIFICATION_COMMAND: ${{ inputs.verify-command }}
         shell: bash
         run: |-
           set -euo pipefail
@@ -55,7 +57,7 @@ jobs:
           import fs from 'node:fs';
           const {runIdentity}=await import(process.env.DELIVERY_ROOT+'/tools/pipeline/context.mjs');
           const bake=JSON.parse(fs.readFileSync('.work/bake.json'));
-          fs.writeFileSync('.work/plan.json',JSON.stringify({kind:'plan',schemaVersion:1,run:runIdentity(),head:process.env.GITHUB_SHA,selected:{images:bake.group.application.targets,chart:['application-candidate']},validation:{},files:[],direct:[],reasons:{},reason:'complete application; native verification owns task caching'},null,2));
+          fs.writeFileSync('.work/plan.json',JSON.stringify({kind:'plan',schemaVersion:1,run:runIdentity(),head:process.env.GITHUB_SHA,selected:{images:bake.group.application.targets,chart:['application-candidate']},verification:{mode:'complete',command:process.env.VERIFICATION_COMMAND},validation:{},files:[],direct:[],reasons:{},reason:'complete application; native verification owns task caching'},null,2));
           NODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -105,6 +107,7 @@ jobs:
         env:
           CHECK_NAME: ${{ matrix.name }}
           VALIDATION_ARTIFACT: validation-${{ strategy.job-index }}
+          VALIDATION_COMMAND: ${{ matrix.command }}
           CHECK_RESULT: ${{ job.status }}
           LINT_RESULT: ""
         run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" "$LINT_RESULT"
