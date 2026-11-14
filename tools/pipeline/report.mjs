@@ -697,7 +697,8 @@ if (command === "record") {
       ...[...new Set(notices)].map((notice) => `- ${notice}`),
     );
   const markdown =
-    plan?.verification?.mode === "projects"
+    plan?.verification?.mode === "projects" ||
+    Object.hasOwn(jobs, "collect-images")
       ? renderProjectSummary({
           run,
           plan,

@@ -1108,3 +1108,42 @@ test("project-plan reports use the final single-report path and retain execution
       md,
     );
   }));
+
+test("failed discovery stays self-documenting without inventing an empty selection or legacy checks", () =>
+  temporary((cwd) => {
+    const env = {
+      GITHUB_EVENT_NAME: "pull_request",
+      JOB_RESULTS: JSON.stringify({
+        plan: { result: "failure" },
+        ci: { result: "failure" },
+        "collect-images": { result: "skipped" },
+      }),
+    };
+    write(
+      cwd,
+      ".work/jobs.json",
+      JSON.stringify({
+        jobs: [
+          {
+            name: "delivery / Discover projects, affected checks and images",
+            conclusion: "failure",
+            html_url: "https://example.test/discovery",
+            steps: [
+              {
+                name: "Discover native project checks and image targets",
+                conclusion: "failure",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    run(cwd, "tools/pipeline/report.mjs", ["summary"], env);
+    const md = fs.readFileSync(path.join(cwd, ".work/summary.md"), "utf8");
+    assert.match(md, /Discovery did not complete/);
+    assert.match(md, /Discover projects.*Failed.*example.test\/discovery/);
+    assert.doesNotMatch(
+      md,
+      /No affected executable projects|Source verification|Java — compile|No affected projects/,
+    );
+  }));

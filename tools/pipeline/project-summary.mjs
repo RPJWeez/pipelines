@@ -24,6 +24,13 @@ export function renderProjectSummary({
   runUrl,
   notices,
 }) {
+  const selectionAvailable = Boolean(plan);
+  plan ||= {
+    projectJobs: [],
+    skippedProjects: [],
+    images: [],
+    selected: { images: [] },
+  };
   const pr = run.event === "pull_request";
   const failed = ["plan", "validate", "publish-images", "ci"].some((k) =>
     ["failure", "cancelled"].includes(jobs[k]?.result),
@@ -76,7 +83,11 @@ export function renderProjectSummary({
     lines.push(
       `| ${escape(task.project)} | ${escape(task.label.split(" - ")[0])} | Not affected; job omitted | ${escape(task.reason)} |`,
     );
-  if (!plan.projectJobs.length)
+  if (!selectionAvailable)
+    lines.push(
+      "| — | Project discovery | Unconfirmed | Discovery did not complete; no job matrix could be confirmed |",
+    );
+  else if (!plan.projectJobs.length)
     lines.push(
       "| — | Project checks | No affected executable projects | See selection scope below |",
     );
@@ -113,6 +124,7 @@ export function renderProjectSummary({
       `| ${escape(name)} | ${status(job?.conclusion || jobs[key]?.result)} | ${detail({ job })} |`,
     );
   };
+  stage("Discover projects, affected checks and images", "plan");
   stage("Validation complete", "ci");
   if (pr)
     lines.push(
