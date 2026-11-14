@@ -16,12 +16,14 @@ runs:
         distribution: temurin
         java-version: ${{ steps.config.outputs.javaVersion }}
         cache: maven
+      if: hashFiles('**/pom.xml') != ''
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
       with:
         node-version: ${{ steps.config.outputs.nodeVersion }}
-        cache: npm
+        cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
     - shell: bash
       run: npm ci
+      if: hashFiles('package-lock.json') != ''
     - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       with:
         path: .nx/cache

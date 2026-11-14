@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runIdentity } from "./context.mjs";
+import { renderProjectSummary } from "./project-summary.mjs";
 const [command, ...args] = process.argv.slice(2);
 const directory = ".work/results";
 const run = runIdentity();
@@ -695,7 +696,21 @@ if (command === "record") {
       "",
       ...[...new Set(notices)].map((notice) => `- ${notice}`),
     );
-  const markdown = lines.join("\n") + "\n";
+  const markdown =
+    plan?.verification?.mode === "projects"
+      ? renderProjectSummary({
+          run,
+          plan,
+          validations,
+          jobs,
+          jobDetails,
+          results,
+          candidate,
+          artifacts,
+          runUrl,
+          notices,
+        })
+      : lines.join("\n") + "\n";
   fs.writeFileSync(
     ".work/run-report.json",
     JSON.stringify(

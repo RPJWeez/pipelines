@@ -7,9 +7,13 @@ on:
         type: string
         required: true
       verify-command:
-        description: Application-owned native source verification command
+        description: Optional additional whole-application check; native projects are discovered automatically
         type: string
-        default: npm run verify
+        default: ""
+      project-checks:
+        description: Optional JSON array of named native commands for repositories without Nx or additional checks
+        type: string
+        default: "[]"
     outputs:
       candidate:
         description: Complete candidate digest reference; empty on PRs
@@ -20,20 +24,27 @@ env:
   NX_DAEMON: "false"
   NX_NO_CLOUD: "true"
   DELIVERY_ROOT: ${{ github.workspace }}/.work/delivery
+  DOCKER_BUILD_SUMMARY: "false"
 jobs:
   plan:
-    name: Plan complete application build
+    name: Discover projects, affected checks and images
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       actions: read
     outputs:
+      checks: ${{ steps.select.outputs.checks }}
+      checks_count: ${{ steps.select.outputs.checks_count }}
       images: ${{ steps.select.outputs.images }}
+      images_count: ${{ steps.select.outputs.images_count }}
+      all_images: ${{ steps.select.outputs.all_images }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -41,43 +52,48 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
-      - name: Read native application inventory
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: ./.work/delivery/.github/actions/setup
+        with:
+          cache-scope: planning
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Discover native project checks and image targets
         id: select
         env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
           VERIFICATION_COMMAND: ${{ inputs.verify-command }}
-        shell: bash
+          PROJECT_CHECKS: ${{ inputs.project-checks }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |-
-          set -euo pipefail
           mkdir -p .work
-          docker buildx bake --print application > .work/bake.json
-          echo "images=$(jq -c .group.application.targets .work/bake.json)" >> "$GITHUB_OUTPUT"
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const {runIdentity}=await import(process.env.DELIVERY_ROOT+'/tools/pipeline/context.mjs');
-          const bake=JSON.parse(fs.readFileSync('.work/bake.json'));
-          fs.writeFileSync('.work/plan.json',JSON.stringify({kind:'plan',schemaVersion:1,run:runIdentity(),head:process.env.GITHUB_SHA,selected:{images:bake.group.application.targets,chart:['application-candidate']},verification:{mode:'complete',command:process.env.VERIFICATION_COMMAND},validation:{},files:[],direct:[],reasons:{},reason:'complete application; native verification owns task caching'},null,2));
-          NODE
+          node "$DELIVERY_ROOT"/tools/pipeline/projects.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: results-plan
           path: .work/plan.json
           include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
   validate:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.label }}
     needs: plan
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Source verification
-            command: ${{ inputs.verify-command }}
+        include: ${{ fromJSON(needs.plan.outputs.checks) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -85,124 +101,81 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: ./.work/delivery/.github/actions/setup
         with:
-          cache-scope: validation-${{ strategy.job-index }}
+          cache-scope: project-${{ matrix.id }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
         with:
           version: v3.18.4
-      - name: Execute validation
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Run project build, tests and declared checks
         id: check
         env:
-          VALIDATION_COMMAND: ${{ matrix.command }}
+          PROJECT_TASK: ${{ toJSON(matrix) }}
+          GITHUB_STEP_SUMMARY: /dev/null
         shell: bash
-        run: |
+        run: |-
           set -euo pipefail
           mkdir -p .work
-          bash -euo pipefail -c "$VALIDATION_COMMAND" 2>&1 | tee .work/validation.log
+          node "$DELIVERY_ROOT"/tools/pipeline/run-project.mjs 2>&1 | tee .work/validation.log
       - name: Record validation result
         if: always()
         env:
-          CHECK_NAME: ${{ matrix.name }}
-          VALIDATION_ARTIFACT: validation-${{ strategy.job-index }}
-          VALIDATION_COMMAND: ${{ matrix.command }}
+          CHECK_NAME: ${{ matrix.label }}
+          VALIDATION_ARTIFACT: project-${{ matrix.id }}
           CHECK_RESULT: ${{ job.status }}
           LINT_RESULT: ""
+          GITHUB_STEP_SUMMARY: /dev/null
         run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" "$LINT_RESULT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: results-validation-${{ strategy.job-index }}
+          name: results-project-${{ matrix.id }}
           path: .work/results
           include-hidden-files: true
           if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: validation-${{ strategy.job-index }}
+          name: project-${{ matrix.id }}
           path: |
             .work/validation.log
             **/target/surefire-reports/**
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
-  container-validate:
-    name: Container source build
-    needs: plan
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Check out exact shared pipeline implementation
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .work/delivery
-          persist-credentials: false
-      - name: Install shared pipeline dependencies
-        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - name: Import trusted main cache without exporting PR results
-        run: |
-          mkdir -p .work
-          docker buildx bake --print application | jq '{target: (.target | with_entries(.value = {"cache-from": ["type=gha,scope=application-" + .key]}))}' > .work/cache.json
-      - uses: docker/bake-action@5be5f02ff8819ecd3092ea6b2e6261c31774f2b4
-        with:
-          source: .
-          files: |
-            docker-bake.hcl
-            .work/cache.json
-          targets: application
-          set: "*.output=type=cacheonly"
-      - name: Record container verification
-        if: always()
         env:
-          CHECK_RESULT: ${{ job.status }}
-        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation 'Container source build' "$CHECK_RESULT" ''
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: results-container-validation
-          path: .work/results
-          include-hidden-files: true
-  ci:
-    name: Validation complete
+          GITHUB_STEP_SUMMARY: /dev/null
+    if: needs.plan.outputs.checks_count != '0'
+  publish-images:
+    name: ${{ matrix.label }}
     needs:
       - plan
       - validate
-      - container-validate
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require successful validation
-        env:
-          PLAN: ${{ needs.plan.result }}
-          VALIDATION: ${{ needs.validate.result }}
-          CONTAINERS: ${{ needs.container-validate.result }}
-        run: test "$PLAN" = success && test "$VALIDATION" = success && [[ "$CONTAINERS" = success || "$CONTAINERS" = skipped ]]
-  publish-images:
-    name: Publish complete image set
-    needs:
-      - plan
-      - ci
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success'
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.images_count != '0' && (needs.validate.result == 'success' || (needs.plan.outputs.checks_count == '0' && needs.validate.result == 'skipped'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
-    outputs:
-      targets: ${{ steps.native.outputs.targets }}
     env:
       REGISTRY: ghcr.io/${{ github.repository }}
       BUILD_TAG: sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       BUILDX_METADATA_PROVENANCE: max
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -210,24 +183,36 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Resolve native application build and cache scopes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Resolve this image and its trusted cache
         id: native
-        run: |
+        run: |-
+          set -euo pipefail
           mkdir -p .work
-          echo "REGISTRY=${REGISTRY,,}" >> "$GITHUB_ENV"
           export REGISTRY="${REGISTRY,,}"
+          echo "REGISTRY=$REGISTRY" >> "$GITHUB_ENV"
           docker buildx bake --print application > .work/bake.json
-          echo "targets=$(jq -c '.group.application.targets' .work/bake.json)" >> "$GITHUB_OUTPUT"
-          # Each target has its own Actions cache. Only protected main can export.
-          jq '{target: (.target | with_entries(.value = {"cache-from": ["type=gha,scope=application-" + .key], "cache-to": ["type=gha,mode=max,scope=application-" + .key]}))}' .work/bake.json > .work/cache.json
+          jq --arg target "$IMAGE_TARGET" --arg publish "$PUBLISH" '{target:{($target): ({"cache-from":["type=gha,scope=application-"+$target]} + (if $publish=="true" then {"cache-to":["type=gha,mode=max,scope=application-"+$target]} else {} end))}}' .work/bake.json > .work/cache.json
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+          PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: docker/bake-action@5be5f02ff8819ecd3092ea6b2e6261c31774f2b4
         id: build
         with:
@@ -235,11 +220,13 @@ jobs:
           files: |
             docker-bake.hcl
             .work/cache.json
-          targets: application
-          push: true
+          targets: ${{ matrix.target }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           provenance: mode=max
           sbom: true
-          set: "*.platform=linux/amd64"
+          set: ${{ github.event_name == 'pull_request' && '*.output=type=cacheonly' || '*.platform=linux/amd64' }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Persist native build metadata
         id: metadata
         if: always()
@@ -257,8 +244,10 @@ jobs:
           }
           fs.mkdirSync('.work', {recursive: true});
           fs.writeFileSync('.work/metadata.json', metadata);
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Record native build outputs immediately
-        if: always() && steps.metadata.outcome == 'success'
+        if: always() && steps.metadata.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           node --input-type=module <<'JS'
           import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
@@ -270,26 +259,122 @@ jobs:
             execFileSync('node',[process.env.DELIVERY_ROOT+'/tools/pipeline/report.mjs','record',name,'image','published',image,'',result['containerimage.digest'],'evidence generation pending'], {stdio:'inherit'});
           }
           JS
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: native-build
+          name: native-build-${{ matrix.target }}
           path: |
             .work/bake.json
             .work/metadata.json
           include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Record this image build result
+        if: always()
+        env:
+          CHECK_NAME: ${{ matrix.label }}
+          CHECK_RESULT: ${{ job.status }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" ""
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: results-publish-images
+          name: results-image-${{ matrix.target }}
           path: .work/results
           include-hidden-files: true
           if-no-files-found: ignore
-  image-evidence:
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.images) }}
+  ci:
+    name: Validation complete
     needs:
+      - plan
+      - validate
+      - publish-images
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful validation
+        env:
+          PLAN: ${{ needs.plan.result }}
+          CHECKS: ${{ needs.validate.result }}
+          IMAGES: ${{ needs.publish-images.result }}
+          CHECKS_COUNT: ${{ needs.plan.outputs.checks_count }}
+          IMAGES_COUNT: ${{ needs.plan.outputs.images_count }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |-
+          test "$PLAN" = success || exit 1
+          if [[ "$CHECKS" != success ]]; then
+            [[ "$CHECKS_COUNT" = 0 && "$CHECKS" = skipped ]] || exit 1
+          fi
+          if [[ "$IMAGES" != success ]]; then
+            [[ "$IMAGES_COUNT" = 0 && "$IMAGES" = skipped ]] || exit 1
+          fi
+  collect-images:
+    name: Verify complete published image inventory
+    needs:
+      - plan
       - ci
       - publish-images
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.publish-images.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ needs.plan.outputs.all_images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: native-build-*
+          path: .work/native
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: results-plan
+          path: .work/plan
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Require one completed native output for every application image
+        run: node "$DELIVERY_ROOT"/tools/pipeline/collect-images.mjs .work/native .work/plan/plan.json
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-build
+          path: |-
+            .work/bake.json
+            .work/metadata.json
+          include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+  image-evidence:
+    needs:
+      - ci
+      - collect-images
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.collect-images.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -299,9 +384,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.publish-images.outputs.targets) }}
+        target: ${{ fromJSON(needs.collect-images.outputs.targets) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -309,21 +396,30 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: native-build
           path: .work
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Read exact native output
         id: image
         env:
           TARGET: ${{ matrix.target }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           digest=$(jq -er --arg target "$TARGET" '.[$target]["containerimage.digest"]' .work/metadata.json)
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -336,23 +432,34 @@ jobs:
           format: spdx-json
           output-file: .work/image.spdx.json
           upload-artifact: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+          show-summary: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.image.outputs.digest }}
           sbom-path: .work/image.spdx.json
           push-to-registry: true
+          show-summary: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
         with:
           cosign-release: v3.1.4
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - env:
           IMAGE: ${{ steps.image.outputs.name }}@${{ steps.image.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           cosign sign --yes "$IMAGE"
           bash "$DELIVERY_ROOT"/tools/pipeline/retain-release.sh "image-${{ matrix.target }}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" .work/image.spdx.json
@@ -364,13 +471,16 @@ jobs:
           path: .work/results
           include-hidden-files: true
           if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    name: Sign & attest image - ${{ matrix.target }}
   publish-chart:
     name: Publish complete candidate; QA pending
     needs:
       - ci
-      - publish-images
+      - collect-images
       - image-evidence
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.publish-images.result == 'success' && needs.image-evidence.result == 'success'
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.collect-images.result == 'success' && needs.image-evidence.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -379,6 +489,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -386,16 +498,26 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: ./.work/delivery/.github/actions/setup
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: native-build
           path: .work
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
         with:
           version: v3.18.4
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Select application-owned candidate chart
         run: |-
           set -euo pipefail
@@ -403,11 +525,13 @@ jobs:
           echo "CHART_ROOT=$INPUT_CHART" >> "$GITHUB_ENV"
         env:
           INPUT_CHART: ${{ inputs.chart }}
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Bind native outputs and verify trusted image evidence
         env:
           GH_TOKEN: ${{ github.token }}
           DELIVERY_SIGNER: ${{ job.workflow_repository }}/${{ job.workflow_file_path }}
           DELIVERY_REVISION: ${{ job.workflow_sha }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           set -euo pipefail
           node "$DELIVERY_ROOT"/tools/pipeline/candidate.mjs .work/bake.json .work/metadata.json "$CHART_ROOT/values.yaml" .work/bound
@@ -437,11 +561,16 @@ jobs:
           chart: ${{ env.CHART_ROOT }}
           registry: ghcr.io/${{ github.repository }}-candidates
           token: ${{ github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-name: ${{ env.CANDIDATE_NAME }}
           subject-digest: ${{ steps.candidate.outputs.digest }}
           push-to-registry: true
+          show-summary: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-name: ${{ env.CANDIDATE_NAME }}
@@ -449,9 +578,13 @@ jobs:
           predicate-type: https://delivery-reference-platform.dev/candidate-build/v1
           predicate-path: .work/bound/build.json
           push-to-registry: true
+          show-summary: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Record immutable handoff; no runtime qualification claimed
         env:
           REFERENCE: ${{ steps.candidate.outputs.reference }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           node --input-type=module <<'JS'
           import fs from 'node:fs';
@@ -463,6 +596,8 @@ jobs:
           name: candidate-handoff
           path: .work/handoff.json
           include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -470,25 +605,29 @@ jobs:
           path: .work/results
           include-hidden-files: true
           if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
     outputs:
       candidate: ${{ steps.candidate.outputs.reference }}
   report:
-    name: Run report
+    name: Application delivery summary
     permissions:
       contents: read
       actions: read
     needs:
       - plan
       - validate
-      - container-validate
-      - ci
       - publish-images
+      - ci
+      - collect-images
       - image-evidence
       - publish-chart
     if: always()
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Check out exact shared pipeline implementation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -496,16 +635,23 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .work/delivery
           persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Install shared pipeline dependencies
         run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: results-*
           path: .work/results
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Read individual check results and log links
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           mkdir -p .work
           set -euo pipefail
@@ -514,6 +660,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: |
           mkdir -p .work
           set -euo pipefail
@@ -523,11 +670,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs release-links
       - name: Render actual execution results
         if: always()
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
+          GITHUB_STEP_SUMMARY: /dev/null
         run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs summary
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         id: report-download
@@ -538,6 +687,8 @@ jobs:
             .work/run-report.json
             .work/summary.md
           include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
       - name: Write final human-readable summary
         if: always()
         env:

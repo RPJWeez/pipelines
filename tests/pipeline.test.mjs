@@ -153,7 +153,7 @@ test("all workflow YAML parses and publication stays gated by validation", () =>
     fs.readFileSync(".github/workflows/application.yml", "utf8"),
   );
   assert.equal(jobs.report.if, "always()");
-  for (const name of ["image-evidence", "publish-images", "publish-chart"])
+  for (const name of ["image-evidence", "collect-images", "publish-chart"])
     assert(jobs[name].needs.includes("ci"));
 });
 test("release retention repairs missing assets and refuses conflicting immutable bytes", () =>
@@ -528,7 +528,7 @@ test("Bake actions use the checkout containing generated cache overlays", () => 
   const { jobs } = parse(
     fs.readFileSync(".github/workflows/application.yml", "utf8"),
   );
-  for (const name of ["container-validate", "publish-images"]) {
+  for (const name of ["publish-images"]) {
     const job = jobs[name];
     const index = job.steps.findIndex((step) =>
       step.uses?.startsWith("docker/bake-action@"),
@@ -734,19 +734,18 @@ console.log(JSON.stringify({assets:[{name:'sbom.json',browser_download_url:'http
     );
   }));
 
-test("publishers handle skipped PR-only ancestors but still require successful main validation", () => {
+test("candidate publication requires complete validated images and all evidence on main", () => {
   const { jobs } = parse(
     fs.readFileSync(".github/workflows/application.yml", "utf8"),
   );
-  const names = ["publish-images", "image-evidence", "publish-chart"];
-  for (const name of names) {
+  for (const name of ["collect-images", "image-evidence", "publish-chart"]) {
     const condition = jobs[name].if;
-    assert.match(
-      condition,
-      /always\(\)/,
-      `${name} must handle a skipped PR-only ancestor`,
-    );
-    const allowed = (event, ci, images = "success", evidence = "success") =>
+    const allowed = (
+      event,
+      ci = "success",
+      images = "success",
+      evidence = "success",
+    ) =>
       Function(
         "always",
         "github",
@@ -758,14 +757,14 @@ test("publishers handle skipped PR-only ancestors but still require successful m
         {
           ci: { result: ci },
           "publish-images": { result: images },
+          "collect-images": { result: images },
           "image-evidence": { result: evidence },
         },
       );
-    assert.equal(allowed("push", "success"), true);
+    assert.equal(allowed("push"), true);
+    assert.equal(allowed("pull_request"), false);
     assert.equal(allowed("push", "failure"), false);
-    assert.equal(allowed("pull_request", "success"), false);
-    if (name !== "publish-images")
-      assert.equal(allowed("push", "success", "failure"), false);
+    assert.equal(allowed("push", "success", "failure"), false);
     if (name === "publish-chart")
       assert.equal(allowed("push", "success", "success", "failure"), false);
   }
@@ -1040,5 +1039,72 @@ test("shared setup failure reports native hook failure without claiming any test
     assert.doesNotMatch(
       md,
       /### Build and test output|# pass|No affected projects were selected/,
+    );
+  }));
+
+test("project-plan reports use the final single-report path and retain execution identity filtering", () =>
+  temporary((cwd) => {
+    const env = {
+      GITHUB_EVENT_NAME: "pull_request",
+      JOB_RESULTS: JSON.stringify({
+        ci: { result: "success" },
+        validate: { result: "success" },
+        "publish-images": { result: "success" },
+      }),
+    };
+    planFixture(cwd, env, {
+      verification: { mode: "projects" },
+      projectJobs: [
+        {
+          id: "abc",
+          project: "shipping",
+          label: "Build/Test - shipping",
+          argv: ["make", "verify"],
+        },
+      ],
+      skippedProjects: [],
+      images: [{ target: "booking-api", label: "Build Image - booking-api" }],
+    });
+    run(
+      cwd,
+      "tools/pipeline/report.mjs",
+      ["validation", "Build/Test - shipping", "success", ""],
+      env,
+    );
+    write(
+      cwd,
+      ".work/jobs.json",
+      JSON.stringify({
+        jobs: [
+          {
+            name: "delivery / Build/Test - shipping",
+            conclusion: "success",
+            html_url: "https://example.test/shipping",
+          },
+          {
+            name: "delivery / Build Image - booking-api",
+            conclusion: "success",
+            html_url: "https://example.test/image",
+          },
+          { name: "delivery / Validation complete", conclusion: "success" },
+        ],
+      }),
+    );
+    run(cwd, "tools/pipeline/report.mjs", ["summary"], env);
+    const md = fs.readFileSync(path.join(cwd, ".work/summary.md"), "utf8");
+    assert.match(md, /shipping.*Passed.*example.test\/shipping/);
+    assert.match(md, /booking-api.*Passed.*example.test\/image/);
+    assert.doesNotMatch(
+      md,
+      /Source verification|No affected projects|# Pull request checks/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(cwd, ".work/github-summary.md")),
+      false,
+    );
+    run(cwd, "tools/pipeline/report.mjs", ["summary", "--github-summary"], env);
+    assert.equal(
+      fs.readFileSync(path.join(cwd, ".work/github-summary.md"), "utf8"),
+      md,
     );
   }));
