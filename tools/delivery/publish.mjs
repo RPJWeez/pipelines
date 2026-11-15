@@ -10,7 +10,7 @@ import {
   predicates,
 } from "./contracts.mjs";
 import { unpackChart, checkChart, inspectOCI } from "./package.mjs";
-import { run, verifyImages } from "./registry.mjs";
+import { run, verifyImages, sha256 } from "./registry.mjs";
 const [mode, dPath, composerPath, payload, output, target] =
   process.argv.slice(2);
 const d = descriptor(read(dPath)),
@@ -113,6 +113,21 @@ if (mode === "image") {
     "--raw",
     `docker://${registry}/${d.chartName}:${version}`,
   ]);
+  const publishedManifest = JSON.parse(raw);
+  assert.equal(publishedManifest.layers?.length, 1, "unexpected chart layers");
+  assert.equal(
+    publishedManifest.layers[0].mediaType,
+    "application/vnd.cncf.helm.chart.content.v1.tar+gzip",
+  );
+  assert.equal(
+    publishedManifest.layers[0].digest,
+    sha256(path.join(payload, "chart.tgz")),
+    "registry chart content differs from inspected archive",
+  );
+  assert.equal(
+    publishedManifest.layers[0].size,
+    fs.statSync(path.join(payload, "chart.tgz")).size,
+  );
   const { createHash } = await import("node:crypto");
   const digest = "sha256:" + createHash("sha256").update(raw).digest("hex");
   const ref = `${registry}/${d.chartName}@${digest}`;

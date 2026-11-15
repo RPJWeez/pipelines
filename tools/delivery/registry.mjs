@@ -79,7 +79,23 @@ export function loadPackage(ref, d, repository) {
     }
   }
   assert(p, "no trusted package evidence");
-  return validatePackage(p, d, repository);
+  validatePackage(p, d, repository);
+  const bound = verified(
+    ref,
+    {
+      repository,
+      revision: p.composer.pipelineRevision,
+      ref: `refs/heads/${d.releaseBranch}`,
+    },
+    `${d.policy.pipelineRepository}/.github/workflows/package.yml`,
+    predicates.package,
+    p.composer.controlSource,
+  );
+  assert(
+    bound.some((x) => JSON.stringify(x) === JSON.stringify(p)),
+    "package composer/source mismatch",
+  );
+  return p;
 }
 export function verifyImages(p, d, repository) {
   for (const image of Object.values(p.images)) {
