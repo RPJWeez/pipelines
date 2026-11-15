@@ -31,5 +31,7 @@ jobs:
         run: |-
           GOBIN="$RUNNER_TEMP/delivery-bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$RUNNER_TEMP/delivery-bin/actionlint" -ignore 'property "workflow_.*" is not defined' -ignore 'reusable workflow call "\$/\.github/workflows/validate.yml"'
+      - name: Use isolated OCI-capable builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - name: Exercise credential-free OCI and chart packaging
         run: node tools/delivery/smoke.mjs
