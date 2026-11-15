@@ -202,7 +202,7 @@ if (command === "record") {
     /* Aggregate results remain available. */
   }
   const runUrl = `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${run.repository}/actions/runs/${run.id}`;
-  const isPR = run.event === "pull_request";
+  const isPR = run.event === "pull_request" || run.validationOnly;
   const publications = [
     ...records
       .filter((record) => record.kind === "publication")
@@ -316,11 +316,13 @@ if (command === "record") {
           ? "Validation cancelled"
           : "Validation incomplete";
   const lines = [
-    `# ${isPR ? "Pull request checks" : "Main branch pipeline"} — ${headline}${!isPR && validationState === "success" ? (publishingFailed ? "; publication failed" : candidate ? "; candidate published" : "; no complete candidate") : ""}`,
+    `# ${run.validationOnly ? "Application validation" : isPR ? "Pull request checks" : "Main branch pipeline"} — ${headline}${!isPR && validationState === "success" ? (publishingFailed ? "; publication failed" : candidate ? "; candidate published" : "; no complete candidate") : ""}`,
     "",
-    isPR
-      ? "**Publishing disabled.** Pull requests validate changes only. No packages, images, or charts were published by this workflow."
-      : "Main branch runs validate changes, then build the complete application candidate. Publication and evidence results are listed separately below.",
+    run.validationOnly
+      ? "**Publishing disabled.** This workflow validates source only. Use the separate manual package workflow to publish."
+      : isPR
+        ? "**Publishing disabled.** Pull requests validate changes only. No packages, images, or charts were published by this workflow."
+        : "Main branch runs validate changes, then build the complete application candidate. Publication and evidence results are listed separately below.",
     "",
     `Commit: \`${escape(run.sha.slice(0, 12))}\` · [Open workflow run](${runUrl})`,
     "",
@@ -330,7 +332,7 @@ if (command === "record") {
     "|---|---|",
     `| Code validation | ${status(validationState)} |`,
     `| Docker images | ${isPR ? (containerResult === "success" ? `Built from source for verification only${plan?.selected?.images?.length ? ` (${plan.selected.images.length} application images)` : ""}. Not pushed or retained as runnable image downloads.` : containerResult === "failure" ? "Source build failed. No images published." : "Verification build was not confirmed; check the job below.") : images.length ? `${images.length} image publication(s) recorded; see package and evidence links below.` : "No image publications recorded."} |`,
-    `| Application candidate | ${isPR ? "Not packaged or published in PR runs." : candidate ? (publishingFailed ? "Published, but CI failed afterward; do not hand off this failed build attempt." : "Published; QA pending; certification pending.") : "No complete candidate handoff recorded."} |`,
+    `| Application candidate | ${run.validationOnly ? "Not packaged or published by validation." : isPR ? "Not packaged or published in PR runs." : candidate ? (publishingFailed ? "Published, but CI failed afterward; do not hand off this failed build attempt." : "Published; QA pending; certification pending.") : "No complete candidate handoff recorded."} |`,
     "| Application deployment / QA / certification | Not performed by this CI workflow. |",
     "",
     isPR

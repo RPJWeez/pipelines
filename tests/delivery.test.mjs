@@ -394,3 +394,31 @@ test("zero-image planning is explicit and unsupported matrix sizes fail before s
   );
   assert.throws(() => projectPlan({ bake, checks: [] }));
 });
+test("main validation reporting never claims image or candidate publication", async () => {
+  const { renderProjectSummary } = await import(
+    "../tools/pipeline/project-summary.mjs"
+  );
+  const report = renderProjectSummary({
+    run: { event: "push", sha, validationOnly: true },
+    plan: {
+      projectJobs: [],
+      skippedProjects: [],
+      images: [{ target: "api", label: "Build Image - api" }],
+      selected: { images: ["api"] },
+    },
+    validations: [],
+    jobs: { ci: { result: "success" } },
+    jobDetails: [],
+    results: [],
+    candidate: null,
+    artifacts: [],
+    runUrl: "https://example.test/run",
+    notices: [],
+  });
+  assert.match(report, /Validation only/);
+  assert.match(report, /separate manual package workflow/);
+  assert.doesNotMatch(
+    report,
+    /Main builds and publishes|candidate not confirmed|Build and publish image/,
+  );
+});

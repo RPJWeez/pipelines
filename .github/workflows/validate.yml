@@ -33,6 +33,7 @@ on:
 permissions:
   contents: read
 env:
+  VALIDATION_ONLY: "true"
   SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
   NX_DAEMON: "false"
   NX_NO_CLOUD: "true"

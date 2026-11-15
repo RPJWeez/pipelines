@@ -6,5 +6,6 @@ export function runIdentity(env = process.env) {
     attempt: env.GITHUB_RUN_ATTEMPT || "1",
     sha: env.SOURCE_SHA || env.GITHUB_SHA || "local",
     event: env.GITHUB_EVENT_NAME || "local",
+    ...(env.VALIDATION_ONLY === "true" ? { validationOnly: true } : {}),
   };
 }
