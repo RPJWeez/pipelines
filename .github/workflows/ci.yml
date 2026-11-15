@@ -1,8 +1,10 @@
 name: Pipeline tests
 on:
-  pull_request:
+  pull_request: null
   push:
-    branches: [main, "codex/**"]
+    branches:
+      - main
+      - codex/**
 permissions:
   contents: read
 jobs:
@@ -11,9 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: "22.22.0", cache: npm }
+        with:
+          node-version: 22.22.0
+          cache: npm
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
-        with: { version: v3.18.4 }
+        with:
+          version: v3.18.4
       - run: npm ci
       - run: npm test
       - run: npm run format:check
@@ -22,3 +27,11 @@ jobs:
       - name: Exercise app mount and native verification hook
         run: |
           docker run --rm -v "$PWD/tests/fixtures/verification-app:/source:ro" application-verification:test
+      - name: Lint reusable workflows
+        run: |-
+          GOBIN="$RUNNER_TEMP/delivery-bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$RUNNER_TEMP/delivery-bin/actionlint" -ignore 'property "workflow_.*" is not defined' -ignore 'reusable workflow call "\$/\.github/workflows/validate.yml"'
+      - name: Use isolated OCI-capable builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Exercise credential-free OCI and chart packaging
+        run: node tools/delivery/smoke.mjs

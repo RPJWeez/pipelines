@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: public-site
+spec:
+  containers:
+    - name: site
+      image: {{ (index .Values.application.workloads "public-site").image | quote }}

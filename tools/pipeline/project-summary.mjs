@@ -32,6 +32,7 @@ export function renderProjectSummary({
     selected: { images: [] },
   };
   const pr = run.event === "pull_request";
+  const validationOnly = pr || run.validationOnly;
   const failed = ["plan", "validate", "publish-images", "ci"].some((k) =>
     ["failure", "cancelled"].includes(jobs[k]?.result),
   );
@@ -46,11 +47,13 @@ export function renderProjectSummary({
       ? "Build/test checks passed"
       : "Build/test checks incomplete";
   const lines = [
-    `# Application delivery — ${headline}${pr ? "" : publicationFailed ? "; candidate publication failed" : candidate ? "; candidate published" : "; candidate not confirmed"}`,
+    `# Application delivery — ${headline}${validationOnly ? "" : publicationFailed ? "; candidate publication failed" : candidate ? "; candidate published" : "; candidate not confirmed"}`,
     "",
-    pr
-      ? "PR validation only. Images are built for verification; nothing is published or deployed."
-      : "Main builds and publishes the complete application image set. Candidate publication, QA and deployment are separate outcomes.",
+    run.validationOnly
+      ? "Validation only. Selected container proofs verify source; nothing is published or deployed."
+      : pr
+        ? "PR validation only. Images are built for verification; nothing is published or deployed."
+        : "Main builds and publishes the complete application image set. Candidate publication, QA and deployment are separate outcomes.",
     "",
     `[Open this run](${runUrl}) · Commit \`${escape(run.sha.slice(0, 12))}\``,
     "",
@@ -101,7 +104,7 @@ export function renderProjectSummary({
   for (const image of plan.images) {
     const observed = lookup(image.label);
     lines.push(
-      `| ${escape(image.target)} | ${pr ? "Build image" : "Build and publish image"} | ${status(observed.result)} | ${detail(observed)} |`,
+      `| ${escape(image.target)} | ${validationOnly ? "Build image" : "Build and publish image"} | ${status(observed.result)} | ${detail(observed)} |`,
     );
   }
   const omitted = (plan.selected.images || []).filter(
@@ -109,7 +112,9 @@ export function renderProjectSummary({
   );
   for (const target of omitted)
     lines.push(
-      `| ${escape(target)} | Build image | Not affected; job omitted | Not required for this PR |`,
+      plan.verification?.containerProof === false
+        ? `| ${escape(target)} | Build image | Not requested here | Built by the manual package workflow after native validation |`
+        : `| ${escape(target)} | Build image | Not affected; job omitted | Not required for this validation |`,
     );
   lines.push(
     "",
@@ -126,9 +131,11 @@ export function renderProjectSummary({
   };
   stage("Discover projects, affected checks and images", "plan");
   stage("Validation complete", "ci");
-  if (pr)
+  if (validationOnly)
     lines.push(
-      "| Candidate publication | Not run | PRs never publish candidates |",
+      pr
+        ? "| Candidate publication | Not run | PRs never publish candidates |"
+        : "| Candidate publication | Not run | Use the separate manual package workflow |",
     );
   else {
     stage("Verify complete published image inventory", "collect-images");
@@ -154,11 +161,13 @@ export function renderProjectSummary({
     "",
     "<details><summary>Selection, native commands and build/test evidence</summary>",
     "",
-    pr
+    validationOnly
       ? "Selected checks include changed projects and their native-graph consumers. Unknown image mappings are built conservatively."
       : "All executable project checks and all application images are selected on main.",
     "",
-    "Each job builds its required source dependencies. Those dependency builds may repeat across jobs; no private-library publication is required. Native tools may reuse cached task outputs.",
+    run.validationOnly
+      ? "Each job builds its required source dependencies. Shared task/dependency caches are disabled in this validation profile."
+      : "Each job builds its required source dependencies. Those dependency builds may repeat across jobs; no private-library publication is required. Native tools may reuse cached task outputs.",
     "",
   );
   for (const task of plan.projectJobs) {

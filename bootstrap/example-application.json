@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "application": "static",
+  "releaseBranch": "main",
+  "chart": "deploy/static",
+  "chartName": "static",
+  "configCompatibility": "config-v1",
+  "components": {
+    "site": { "compatibility": "site-v1", "workloads": ["public-site"] }
+  },
+  "policy": {
+    "environment": "delivery-release",
+    "pipelineRepository": "example/pipelines",
+    "trustedPipelineRevisions": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "certification": {
+      "repository": "example/qualification",
+      "workflow": "example/qualification/.github/workflows/certify.yml",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "predicateType": "https://example.test/certification/v1",
+      "policyVersion": "enterprise-v1",
+      "maxAgeHours": 24,
+      "decisionsPath": ".delivery/certifications.json"
+    }
+  }
+}

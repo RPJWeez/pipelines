@@ -1,6 +1,9 @@
 name: Pinned build toolchain
 description: Install Java, Node, locked npm dependencies, and public dependency caches
 inputs:
+  cache-enabled:
+    default: "true"
+    description: Enable native task cache restoration and saving
   cache-scope:
     default: tooling
     description: Distinct task-cache producer scope (matrix jobs must not race to save one key)
@@ -15,16 +18,17 @@ runs:
       with:
         distribution: temurin
         java-version: ${{ steps.config.outputs.javaVersion }}
-        cache: maven
+        cache: ${{ inputs.cache-enabled == 'true' && 'maven' || '' }}
       if: hashFiles('**/pom.xml') != ''
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
       with:
         node-version: ${{ steps.config.outputs.nodeVersion }}
-        cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+        cache: ${{ inputs.cache-enabled == 'true' && hashFiles('package-lock.json') != '' && 'npm' || '' }}
     - shell: bash
       run: npm ci
       if: hashFiles('package-lock.json') != ''
-    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+    - if: inputs.cache-enabled == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       with:
         path: .nx/cache
         key: nx-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-scope }}-${{ github.ref }}-${{ github.sha }}-${{ github.run_attempt }}

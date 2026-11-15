@@ -1,0 +1,383 @@
+name: Reusable package creation
+on:
+  workflow_call:
+    inputs:
+      operation:
+        type: string
+        default: release
+        description: dev, release or compose
+      chart:
+        type: string
+        default: ""
+        description: Deprecated; chart comes from trusted descriptor
+      descriptor:
+        type: string
+        default: .delivery/application.json
+        description: Application descriptor on protected main
+      source-ref:
+        type: string
+        default: ""
+        description: Same-repository branch for dev package
+      candidate:
+        type: string
+        default: ""
+        description: Immutable baseline candidate for composition
+      overrides:
+        type: string
+        default: "{}"
+        description: JSON component to immutable candidate reference mapping
+      reason:
+        type: string
+        default: ""
+        description: Reason for composing older components
+      project-checks:
+        type: string
+        default: "[]"
+        description: Native checks for non-Nx builds
+    outputs:
+      package:
+        description: Immutable published chart
+        value: ${{ jobs.chart.outputs.reference }}
+    secrets:
+      platform-read-token:
+        required: false
+        description: Optional short-lived read-only token for private shared implementation repository
+permissions:
+  contents: read
+env:
+  NX_DAEMON: "false"
+  NX_NO_CLOUD: "true"
+  DOCKER_BUILD_SUMMARY: "false"
+jobs:
+  guard:
+    name: Resolve trusted control and source
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ steps.guard.outputs.source }}
+      environment: ${{ steps.guard.outputs.environment }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      images: ${{ steps.inventory.outputs.images }}
+      count: ${{ steps.inventory.outputs.count }}
+    steps:
+      - &a1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .platform
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+      - &a2
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+      - &a3
+        run: npm ci --prefix .platform --omit=dev --ignore-scripts
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: .control
+          persist-credentials: false
+      - id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
+          SOURCE_REF: ${{ inputs.source-ref }}
+          CANDIDATE: ${{ inputs.candidate }}
+          DESCRIPTOR: ${{ inputs.descriptor }}
+          PIPELINE_REPOSITORY: ${{ job.workflow_repository }}
+          PIPELINE_REVISION: ${{ job.workflow_sha }}
+          CONTROL_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node .platform/tools/delivery/guard.mjs ".control/$DESCRIPTOR" .guard
+      - id: inventory
+        run: |-
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const d=JSON.parse(fs.readFileSync('.guard/descriptor.json'));
+          const images=Object.keys(d.components);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,'images='+JSON.stringify(images)+'\ncount='+images.length+'\n');
+          JS
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-control
+          path: .guard
+          include-hidden-files: true
+  validate:
+    needs: guard
+    if: inputs.operation != 'compose'
+    uses: $/.github/workflows/validate.yml
+    with:
+      chart: .
+      full: true
+      source-sha: ${{ needs.guard.outputs.source }}
+      project-checks: ${{ inputs.project-checks }}
+      container-proof: false
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    secrets:
+      platform-read-token: ${{ secrets.platform-read-token }}
+  select:
+    needs: guard
+    if: inputs.operation == 'compose'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - *a1
+      - *a2
+      - *a3
+      - &a4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.guard.outputs.artifact }}
+          path: .guard
+      - &a5
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+      - &a6
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
+      - name: Authenticate registry reader
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          mkdir -p "$HOME/.docker"
+          printf %s "$GH_TOKEN" | skopeo login --authfile "$HOME/.docker/config.json" ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          printf %s "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate }}
+          OVERRIDES: ${{ inputs.overrides }}
+          REASON: ${{ inputs.reason }}
+        run: node .platform/tools/delivery/compose.mjs .guard/descriptor.json .guard/composer.json .selection
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-selection
+          path: .selection
+          include-hidden-files: true
+  build:
+    needs:
+      - guard
+      - validate
+      - select
+    if: always() && needs.guard.result == 'success' && ((inputs.operation == 'compose' && needs.select.result == 'success') || (inputs.operation != 'compose' && needs.validate.result == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - *a1
+      - *a2
+      - *a3
+      - *a4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.guard.outputs.source }}
+          path: source
+          persist-credentials: false
+      - if: inputs.operation == 'compose'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.select.outputs.artifact }}
+          path: .selection
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build data-only package without publication credentials
+        env:
+          TRUST_CLASS: ${{ inputs.operation == 'dev' && 'dev' || 'release' }}
+          OPERATION: ${{ inputs.operation }}
+        run: |-
+          set -euo pipefail
+          args=()
+          if [[ "$OPERATION" == compose ]]; then args+=(.selection/selection.json); fi
+          node .platform/tools/delivery/package.mjs .guard/descriptor.json source .payload .guard/composer.json "$TRUST_CLASS" "${args[@]}"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-payload
+          path: .payload
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+  images:
+    needs:
+      - guard
+      - build
+      - inspect
+    if: inputs.operation != 'compose' && needs.guard.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.guard.outputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.guard.outputs.images) }}
+    steps:
+      - *a1
+      - *a2
+      - *a3
+      - *a4
+      - &a7
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.inspect.outputs.artifact }}
+          path: .payload
+      - *a5
+      - *a6
+      - run: node .platform/tools/delivery/payload.mjs .payload
+      - &a8
+        name: Authenticate data publishers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          set -euo pipefail
+          mkdir -p "$HOME/.docker"
+          printf %s "$GH_TOKEN" | skopeo login --authfile "$HOME/.docker/config.json" ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          printf %s "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - id: publish
+        env:
+          TRUST_CLASS: ${{ inputs.operation == 'dev' && 'dev' || 'release' }}
+          TARGET: ${{ matrix.target }}
+        run: node .platform/tools/delivery/publish.mjs image .guard/descriptor.json .guard/composer.json .payload .published "$TARGET"
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: ${{ steps.publish.outputs.name }}@${{ steps.publish.outputs.digest }}
+          format: spdx-json
+          output-file: .published/image.spdx.json
+          upload-artifact: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          predicate-type: https://delivery-reference-platform.dev/image/v2
+          predicate-path: .published/image.json
+          push-to-registry: true
+          show-summary: false
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+          show-summary: false
+      - uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: .published/image.spdx.json
+          push-to-registry: true
+          show-summary: false
+  chart:
+    needs:
+      - guard
+      - build
+      - images
+      - inspect
+    if: always() && needs.build.result == 'success' && needs.inspect.result == 'success' && (needs.images.result == 'success' || (needs.images.result == 'skipped' && (inputs.operation == 'compose' || needs.guard.outputs.count == '0')))
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.guard.outputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      reference: ${{ steps.publish.outputs.reference }}
+    steps:
+      - *a1
+      - *a2
+      - *a3
+      - *a4
+      - *a7
+      - *a5
+      - *a6
+      - run: node .platform/tools/delivery/payload.mjs .payload
+      - *a8
+      - id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUST_CLASS: ${{ inputs.operation == 'dev' && 'dev' || 'release' }}
+        run: node .platform/tools/delivery/publish.mjs chart .guard/descriptor.json .guard/composer.json .payload .published
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          predicate-type: https://delivery-reference-platform.dev/package/v2
+          predicate-path: .published/package.json
+          push-to-registry: true
+          show-summary: false
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+          show-summary: false
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          path: .published/chart
+          format: spdx-json
+          output-file: .published/chart.spdx.json
+          upload-artifact: false
+      - uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: .published/chart.spdx.json
+          push-to-registry: true
+          show-summary: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-handoff
+          path: .published/handoff.json
+          include-hidden-files: true
+      - name: Report complete publication
+        run: cat .published/summary.md >> "$GITHUB_STEP_SUMMARY"
+  inspect:
+    needs:
+      - guard
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - *a1
+      - *a2
+      - *a3
+      - *a4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: .payload
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+      - run: node .platform/tools/delivery/payload.mjs .payload
+      - env:
+          TRUST_CLASS: ${{ inputs.operation == 'dev' && 'dev' || 'release' }}
+        run: node .platform/tools/delivery/inspect.mjs .guard/descriptor.json .guard/composer.json .payload .verified
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-payload
+          path: .verified
+          include-hidden-files: true
+          retention-days: 3

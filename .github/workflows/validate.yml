@@ -1,0 +1,448 @@
+name: Reusable application validation
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: Application-owned candidate chart directory
+        type: string
+        required: true
+      verify-command:
+        description: Optional additional whole-application check; native projects are discovered automatically
+        type: string
+        default: ""
+      project-checks:
+        description: Optional JSON array of named native commands for repositories without Nx or additional checks
+        type: string
+        default: "[]"
+      source-sha:
+        type: string
+        default: ""
+        description: Exact source commit; empty for ordinary validation events
+      full:
+        type: boolean
+        default: false
+        description: Validate complete source for manual package creation
+      deduplicate:
+        type: boolean
+        default: false
+        description: Skip a branch push when an open PR already validates it
+      container-proof:
+        type: boolean
+        default: true
+        description: Build containers without publication; package creation performs its own image build
+    secrets:
+      platform-read-token:
+        required: false
+        description: Optional short-lived read-only token for private shared implementation repository
+permissions:
+  contents: read
+env:
+  VALIDATION_ONLY: "true"
+  SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+  NX_DAEMON: "false"
+  NX_NO_CLOUD: "true"
+  DELIVERY_ROOT: ${{ github.workspace }}/.work/delivery
+  DOCKER_BUILD_SUMMARY: "false"
+jobs:
+  plan:
+    name: Discover projects, affected checks and images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      checks: ${{ steps.select.outputs.checks }}
+      checks_count: ${{ steps.select.outputs.checks_count }}
+      images: ${{ steps.select.outputs.images }}
+      images_count: ${{ steps.select.outputs.images_count }}
+      all_images: ${{ steps.select.outputs.all_images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: ./.work/delivery/.github/actions/setup
+        with:
+          cache-enabled: "false"
+          cache-scope: validation-planning
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Discover native project checks and image targets
+        id: select
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          VERIFICATION_COMMAND: ${{ inputs.verify-command }}
+          PROJECT_CHECKS: ${{ inputs.project-checks }}
+          GITHUB_STEP_SUMMARY: /dev/null
+          VALIDATION_ONLY: "true"
+          FORCE_ALL: ${{ inputs.full || github.ref_name == github.event.repository.default_branch || github.event_name == 'merge_group' }}
+          SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+          AFFECTED_BASE: ${{ github.event.before }}
+          SKIP_IMAGE_PROOF: ${{ !inputs.container-proof }}
+        run: |-
+          mkdir -p .work
+          node "$DELIVERY_ROOT"/tools/pipeline/projects.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: results-plan
+          path: .work/plan.json
+          include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    needs: event-gate
+    if: needs.event-gate.outputs.run == 'true'
+  validate:
+    name: ${{ matrix.label }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.checks) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: ./.work/delivery/.github/actions/setup
+        with:
+          cache-enabled: "false"
+          cache-scope: validation-project-${{ matrix.id }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Run project build, tests and declared checks
+        id: check
+        env:
+          PROJECT_TASK: ${{ toJSON(matrix) }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        shell: bash
+        run: |-
+          set -euo pipefail
+          mkdir -p .work
+          node "$DELIVERY_ROOT"/tools/pipeline/run-project.mjs 2>&1 | tee .work/validation.log
+      - name: Record validation result
+        if: always()
+        env:
+          CHECK_NAME: ${{ matrix.label }}
+          VALIDATION_ARTIFACT: project-${{ matrix.id }}
+          CHECK_RESULT: ${{ job.status }}
+          LINT_RESULT: ""
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" "$LINT_RESULT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: results-project-${{ matrix.id }}
+          path: .work/results
+          include-hidden-files: true
+          if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: project-${{ matrix.id }}
+          path: |
+            .work/validation.log
+            **/target/surefire-reports/**
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    if: needs.plan.outputs.checks_count != '0'
+  publish-images:
+    name: ${{ matrix.label }}
+    needs:
+      - plan
+      - validate
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.images_count != '0' && (needs.validate.result == 'success' || (needs.plan.outputs.checks_count == '0' && needs.validate.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      REGISTRY: ghcr.io/${{ github.repository }}
+      BUILD_TAG: sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILDX_METADATA_PROVENANCE: max
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Resolve this image and its trusted cache
+        id: native
+        run: |-
+          set -euo pipefail
+          mkdir -p .work
+          export REGISTRY="${REGISTRY,,}"
+          echo "REGISTRY=$REGISTRY" >> "$GITHUB_ENV"
+          docker buildx bake --print application > .work/bake.json
+          jq --arg target "$IMAGE_TARGET" --arg publish "$PUBLISH" '{target:{($target): ({"cache-from":["type=gha,scope=validation-"+$target]} + (if $publish=="true" then {"cache-to":["type=gha,mode=max,scope=application-"+$target]} else {} end))}}' .work/bake.json > .work/cache.json
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+          PUBLISH: "false"
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: docker/bake-action@5be5f02ff8819ecd3092ea6b2e6261c31774f2b4
+        id: build
+        with:
+          source: .
+          files: |
+            docker-bake.hcl
+            .work/cache.json
+          targets: ${{ matrix.target }}
+          push: false
+          provenance: mode=max
+          sbom: true
+          set: |-
+            *.output=type=cacheonly
+            *.platform=linux/amd64
+            *.cache-to=
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Persist native build metadata
+        id: metadata
+        if: always()
+        shell: node {0}
+        run: |
+          const fs = require('node:fs');
+          // JSON literal in the runner's script file, never an environment/argv payload.
+          const metadata = ${{ toJSON(steps.build.outputs.metadata) }};
+          if (typeof metadata !== 'string' || !metadata.trim()) {
+            throw new Error('Build metadata unavailable; image publication remains unconfirmed.');
+          }
+          const parsed = JSON.parse(metadata);
+          if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+            throw new Error('Expected native Bake metadata object.');
+          }
+          fs.mkdirSync('.work', {recursive: true});
+          fs.writeFileSync('.work/metadata.json', metadata);
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-build-${{ matrix.target }}
+          path: |
+            .work/bake.json
+            .work/metadata.json
+          include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Record this image build result
+        if: always()
+        env:
+          CHECK_NAME: ${{ matrix.label }}
+          CHECK_RESULT: ${{ job.status }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" ""
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: results-image-${{ matrix.target }}
+          path: .work/results
+          include-hidden-files: true
+          if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.images) }}
+  ci:
+    name: Validation complete
+    needs:
+      - plan
+      - validate
+      - publish-images
+      - event-gate
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful validation
+        env:
+          PLAN: ${{ needs.plan.result }}
+          CHECKS: ${{ needs.validate.result }}
+          IMAGES: ${{ needs.publish-images.result }}
+          CHECKS_COUNT: ${{ needs.plan.outputs.checks_count }}
+          IMAGES_COUNT: ${{ needs.plan.outputs.images_count }}
+          GITHUB_STEP_SUMMARY: /dev/null
+          EVENT_SELECTED: ${{ needs.event-gate.outputs.run }}
+        run: |-
+          if [[ "$EVENT_SELECTED" == false ]]; then exit 0; fi
+          test "$PLAN" = success || exit 1
+          if [[ "$CHECKS" != success ]]; then
+            [[ "$CHECKS_COUNT" = 0 && "$CHECKS" = skipped ]] || exit 1
+          fi
+          if [[ "$IMAGES" != success ]]; then
+            [[ "$IMAGES_COUNT" = 0 && "$IMAGES" = skipped ]] || exit 1
+          fi
+  report:
+    name: Application delivery summary
+    permissions:
+      contents: read
+      actions: read
+    needs:
+      - plan
+      - validate
+      - publish-images
+      - ci
+      - event-gate
+    if: always() && needs.event-gate.outputs.run != 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: results-*
+          path: .work/results
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Read individual check results and log links
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |
+          mkdir -p .work
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100&filter=latest" | jq '{jobs: [.[].jobs[]]}' > .work/jobs.json
+      - name: Read run artifact links
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |
+          mkdir -p .work
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" > .work/attempt.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" | jq --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --slurpfile metadata .work/attempt.json '{runId:$run,attempt:$attempt,startedAt:$metadata[0].run_started_at,ownerType:$metadata[0].repository.owner.type,artifacts:[.[].artifacts[]]}' > .work/artifacts.json
+      - name: Read release assets for observed publications
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs release-links
+      - name: Render actual execution results
+        if: always()
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs summary
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        id: report-download
+        if: always()
+        with:
+          name: run-report
+          path: |
+            .work/run-report.json
+            .work/summary.md
+          include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Write final human-readable summary
+        if: always()
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          REPORT_ARTIFACT_ID: ${{ steps.report-download.outputs.artifact-id }}
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs summary --github-summary
+  event-gate:
+    name: Choose one validation event
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.event.outputs.run }}
+    steps:
+      - id: event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEDUPLICATE: ${{ inputs.deduplicate }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |-
+          set -euo pipefail
+          selected=true
+          if [[ "$DEDUPLICATE" == true && "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            # On API uncertainty run validation rather than dropping checks.
+            count=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" -f state=open -f "head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" --jq length) || count=0
+            if [[ "$count" != 0 ]]; then selected=false; fi
+          fi
+          echo "run=$selected" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,4 @@
+application:
+  workloads:
+    public-site:
+      image: BUILD_OUTPUT:site
