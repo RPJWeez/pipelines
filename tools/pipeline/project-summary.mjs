@@ -50,7 +50,7 @@ export function renderProjectSummary({
     `# Application delivery — ${headline}${validationOnly ? "" : publicationFailed ? "; candidate publication failed" : candidate ? "; candidate published" : "; candidate not confirmed"}`,
     "",
     run.validationOnly
-      ? "Validation only. Images are built for verification; nothing is published or deployed."
+      ? "Validation only. Selected container proofs verify source; nothing is published or deployed."
       : pr
         ? "PR validation only. Images are built for verification; nothing is published or deployed."
         : "Main builds and publishes the complete application image set. Candidate publication, QA and deployment are separate outcomes.",
@@ -112,7 +112,9 @@ export function renderProjectSummary({
   );
   for (const target of omitted)
     lines.push(
-      `| ${escape(target)} | Build image | Not affected; job omitted | Not required for this PR |`,
+      plan.verification?.containerProof === false
+        ? `| ${escape(target)} | Build image | Not requested here | Built by the manual package workflow after native validation |`
+        : `| ${escape(target)} | Build image | Not affected; job omitted | Not required for this validation |`,
     );
   lines.push(
     "",

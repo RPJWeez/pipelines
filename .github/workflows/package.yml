@@ -113,6 +113,7 @@ jobs:
       full: true
       source-sha: ${{ needs.guard.outputs.source }}
       project-checks: ${{ inputs.project-checks }}
+      container-proof: false
     permissions:
       contents: read
       actions: read

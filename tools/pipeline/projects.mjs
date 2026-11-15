@@ -25,6 +25,7 @@ export function projectPlan({
   fallback = "",
   event = "pull_request",
   allowEmptyImages = false,
+  skipImages = false,
 }) {
   const all = bake.group?.application?.targets;
   assert(
@@ -118,6 +119,7 @@ export function projectPlan({
   );
   const images = all
     .filter((target) => {
+      if (skipImages) return false;
       if (event !== "pull_request" || selected === null) return true;
       const context = bake.target[target].context || ".";
       const dockerfile = path.posix.normalize(
@@ -147,7 +149,10 @@ export function projectPlan({
   return {
     kind: "plan",
     schemaVersion: 1,
-    verification: { mode: "projects" },
+    verification: {
+      mode: "projects",
+      ...(skipImages ? { containerProof: false } : {}),
+    },
     projectJobs: jobs,
     skippedProjects: skipped,
     images,
@@ -220,6 +225,9 @@ if (
         ? "pull_request"
         : process.env.GITHUB_EVENT_NAME,
     allowEmptyImages: process.env.VALIDATION_ONLY === "true",
+    skipImages:
+      process.env.VALIDATION_ONLY === "true" &&
+      process.env.SKIP_IMAGE_PROOF === "true",
   });
   plan.run = runIdentity();
   plan.head = process.env.SOURCE_SHA || process.env.GITHUB_SHA;

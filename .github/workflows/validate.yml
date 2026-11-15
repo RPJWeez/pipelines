@@ -26,6 +26,10 @@ on:
         type: boolean
         default: false
         description: Skip a branch push when an open PR already validates it
+      container-proof:
+        type: boolean
+        default: true
+        description: Build containers without publication; package creation performs its own image build
     secrets:
       platform-read-token:
         required: false
@@ -92,6 +96,7 @@ jobs:
           FORCE_ALL: ${{ inputs.full || github.ref_name == github.event.repository.default_branch || github.event_name == 'merge_group' }}
           SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
           AFFECTED_BASE: ${{ github.event.before }}
+          SKIP_IMAGE_PROOF: ${{ !inputs.container-proof }}
         run: |-
           mkdir -p .work
           node "$DELIVERY_ROOT"/tools/pipeline/projects.mjs

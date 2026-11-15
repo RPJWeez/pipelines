@@ -422,3 +422,25 @@ test("main validation reporting never claims image or candidate publication", as
     /Main builds and publishes|candidate not confirmed|Build and publish image/,
   );
 });
+test("manual package creation validates native checks without duplicate container builds", async () => {
+  const { projectPlan } = await import("../tools/pipeline/projects.mjs");
+  const plan = projectPlan({
+    graph: {
+      nodes: {
+        api: { data: { root: "api", targets: { build: {}, test: {} } } },
+      },
+    },
+    bake: {
+      group: { application: { targets: ["api"] } },
+      target: { api: { dockerfile: "api/Dockerfile" } },
+    },
+    skipImages: true,
+  });
+  assert.equal(plan.projectJobs.length, 1);
+  assert.equal(plan.images.length, 0);
+  assert.deepEqual(plan.selected.images, ["api"]);
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/package.yml", "utf8"),
+  );
+  assert.equal(workflow.jobs.validate.with["container-proof"], false);
+});
