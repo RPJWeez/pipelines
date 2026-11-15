@@ -6,10 +6,18 @@ Generate the application Actions entry point:
 node tools/delivery/bootstrap.mjs /tmp/my-app-workflow YOUR_ORG/pipelines v1
 ```
 
-Review/copy `.github/workflows/ci.yml`. It contains GitHub triggers, the manual form and
-calls to this repository. No delivery scripts, service lists, certificate configuration,
+Review/copy the five files in `.github/workflows`. Each contains only the triggers,
+relevant inputs and a call to its one shared pipeline. No delivery scripts, service lists, certificate configuration,
 trust lists or extra application descriptor are installed. Existing repositories can
 keep their own workflow names/forms and call the same reusable interfaces.
+
+`ci.yml` handles pushes, PRs and main merges only. `dev-package.yml`,
+`release-candidate.yml`, `compose-candidate.yml` and `promote-release.yml` are separate
+manual workflows, with forms containing only their own inputs. CI never references them.
+Composition has no image-build jobs; promotion has no validation/build tree. Dev and
+candidate creation reuse the same build implementation because they perform the same
+work with different source/publication destinations. Native checks are a shared primitive
+without container-proof or manual-delivery jobs.
 
 The platform maintains the compatible `v1` version after main CI passes. Applications
 reference that version rather than copying implementation SHAs into multiple settings.
@@ -75,3 +83,7 @@ Supported profile: GitHub.com/Enterprise Cloud, hosted Ubuntu, GHCR, Bake, Helm 
 linux/amd64. Up to 256 checks/components, 2 GiB per archive and 4 GiB per payload.
 Non-Nx and zero-image fixtures exercise onboarding without changing shared implementation.
 The legacy `application.yml` interface remains available for existing callers.
+
+The old `delivery.yml` and `package.yml` interfaces remain as compatibility adapters for
+already-installed v1 callers during rollout. New entry points do not reference them, and
+they cannot add skipped delivery branches to the new CI graph.

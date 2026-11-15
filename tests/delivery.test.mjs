@@ -197,9 +197,16 @@ test("manual package creation validates native checks without duplicate containe
   assert.equal(plan.images.length, 0);
   assert.deepEqual(plan.selected.images, ["api"]);
   const workflow = parse(
-    fs.readFileSync(".github/workflows/package.yml", "utf8"),
+    fs.readFileSync(".github/workflows/build-package.yml", "utf8"),
   );
-  assert.equal(workflow.jobs.validate.with["container-proof"], false);
+  assert.equal(
+    workflow.jobs.validate.uses,
+    "$/.github/workflows/check-source.yml",
+  );
+  const native = parse(
+    fs.readFileSync(".github/workflows/check-source.yml", "utf8"),
+  );
+  assert(!native.jobs["image-checks"] && !native.jobs.images);
 });
 test("package checks preserve provenance and reject dev, incomplete and cross-application inputs", () => {
   assert.doesNotThrow(() => validatePackage(pkg, d, producer.repository));
@@ -292,9 +299,16 @@ test("native chart declarations bootstrap and package non-Nx and chart-only apps
       assert.equal(application.chartName, chartName);
       scaffold(root, d.pipelineRepository, "v1");
       assert.throws(() => scaffold(root, d.pipelineRepository, "v1"));
-      assert.deepEqual(fs.readdirSync(path.join(root, ".github/workflows")), [
-        "ci.yml",
-      ]);
+      assert.deepEqual(
+        fs.readdirSync(path.join(root, ".github/workflows")).sort(),
+        [
+          "ci.yml",
+          "compose-candidate.yml",
+          "dev-package.yml",
+          "promote-release.yml",
+          "release-candidate.yml",
+        ].sort(),
+      );
       assert(!fs.existsSync(path.join(root, ".delivery")));
       const images = Object.fromEntries(
         Object.keys(application.components).map((name) => [
@@ -366,34 +380,42 @@ test("manual dispatch cannot run from a branch other than the server-defined def
     (e) => e.stderr.toString().includes("repository default branch"),
   );
 });
-test("application caller only defines native GitHub events/form and forwards them to shared execution", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-caller-"));
+test("application workflows have separate triggers and direct calls, without an operation dispatcher", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-callers-"));
   try {
     scaffold(dir, d.pipelineRepository, "v1");
-    const text = fs.readFileSync(
-        path.join(dir, ".github/workflows/ci.yml"),
-        "utf8",
-      ),
-      w = parse(text);
-    assert(
-      w.on.push &&
-        w.on.pull_request &&
-        w.on.merge_group &&
-        w.on.workflow_dispatch,
-    );
-    assert.equal(w.jobs.publish.with.request, "${{ toJSON(inputs) }}");
-    assert(
-      !/certification|trustedPipeline|\.delivery|components|^\s+run:/m.test(
-        text,
-      ),
-    );
-    for (const job of Object.values(w.jobs)) assert(job.uses.endsWith("@v1"));
+    const directory = path.join(dir, ".github/workflows");
+    const files = fs.readdirSync(directory);
+    assert.equal(files.length, 5);
+    for (const name of files) {
+      const text = fs.readFileSync(path.join(directory, name), "utf8"),
+        w = parse(text);
+      assert(
+        !/certification|trustedPipeline|\.delivery|components/m.test(text),
+      );
+      const jobs = Object.values(w.jobs);
+      assert.equal(jobs.length, 1);
+      assert(!jobs[0].if);
+      assert(!jobs[0].steps);
+      assert(jobs[0].uses.endsWith("@v1"));
+      if (name === "ci.yml") {
+        assert(w.on.push && w.on.pull_request && w.on.merge_group);
+        assert(!w.on.workflow_dispatch);
+        assert(jobs[0].uses.includes("/validate.yml@"));
+      } else {
+        assert.deepEqual(Object.keys(w.on), ["workflow_dispatch"]);
+        assert(!("operation" in (w.on.workflow_dispatch.inputs || {})));
+        assert(!jobs[0].uses.includes("/delivery.yml@"));
+      }
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 test("builds remain read-only and only promotion uses the native GitHub release approval", () => {
-  const w = parse(fs.readFileSync(".github/workflows/package.yml", "utf8"));
+  const w = parse(
+    fs.readFileSync(".github/workflows/build-package.yml", "utf8"),
+  );
   for (const n of ["guard", "build", "inspect"])
     assert.deepEqual(w.jobs[n].permissions, { contents: "read" });
   assert(!w.jobs.images.environment && !w.jobs.chart.environment);
@@ -415,7 +437,23 @@ test("promotion uses a real successful QA run and creates a native GitHub releas
       candidate = `ghcr.io/enterprise/orders-release-packages/orders@${digest}`;
     fs.writeFileSync(
       path.join(dir, "fixture.json"),
-      JSON.stringify({ d, pkg, producer }),
+      JSON.stringify({
+        d,
+        pkg: {
+          ...pkg,
+          composer: { ...producer, builderWorkflow: "compose-candidate.yml" },
+          images: Object.fromEntries(
+            Object.entries(pkg.images).map(([name, image]) => [
+              name,
+              {
+                ...image,
+                producer: { ...producer, builderWorkflow: "build-package.yml" },
+              },
+            ]),
+          ),
+        },
+        producer: { ...producer, builderWorkflow: "build-package.yml" },
+      }),
     );
     const gh = path.join(dir, "gh");
     fs.writeFileSync(
@@ -468,6 +506,16 @@ console.log(JSON.stringify(out));
     const calls = fs.readFileSync(env.CALLS, "utf8");
     assert(calls.includes("repos/enterprise/orders/releases"));
     assert(!calls.includes("docker"));
+    assert(
+      calls.includes(
+        "enterprise/pipelines/.github/workflows/compose-candidate.yml",
+      ),
+    );
+    assert(
+      calls.includes(
+        "enterprise/pipelines/.github/workflows/build-package.yml",
+      ),
+    );
     fs.writeFileSync(env.CALLS, "");
     assert.throws(() =>
       execFileSync(
@@ -485,6 +533,25 @@ console.log(JSON.stringify(out));
       !fs
         .readFileSync(env.CALLS, "utf8")
         .includes("repos/enterprise/orders/git/tags"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "fixture.json"),
+      JSON.stringify({ d, pkg, producer }),
+    );
+    execFileSync(
+      process.execPath,
+      [
+        script,
+        path.join(dir, "application.json"),
+        path.join(dir, "composer.json"),
+        path.join(dir, "legacy"),
+      ],
+      { env: { ...env, RELEASE_ID: "v1.2.4" }, stdio: "pipe" },
+    );
+    assert(
+      fs
+        .readFileSync(env.CALLS, "utf8")
+        .includes("enterprise/pipelines/.github/workflows/package.yml"),
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -521,4 +588,69 @@ test("failed discovery reports validation and CD without referring operators to 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+test("each pipeline expands to only its relevant reusable workflows and jobs", () => {
+  const load = (name) =>
+    parse(fs.readFileSync(`.github/workflows/${name}.yml`, "utf8"));
+  const expand = (name, seen = new Set()) => {
+    if (seen.has(name)) return seen;
+    seen.add(name);
+    for (const job of Object.values(load(name).jobs)) {
+      const m = /^\$\/\.github\/workflows\/(.+)\.yml$/.exec(job.uses || "");
+      if (m) expand(m[1], seen);
+    }
+    return seen;
+  };
+  assert.deepEqual([...expand("validate")].sort(), [
+    "check-source",
+    "validate",
+  ]);
+  assert.deepEqual([...expand("dev-package")].sort(), [
+    "build-package",
+    "check-source",
+    "dev-package",
+  ]);
+  assert.deepEqual([...expand("release-candidate")].sort(), [
+    "build-package",
+    "check-source",
+    "release-candidate",
+  ]);
+  assert.deepEqual([...expand("compose-candidate")], ["compose-candidate"]);
+  assert.deepEqual([...expand("promote")], ["promote"]);
+  const build = load("build-package");
+  assert(!build.jobs.select);
+  assert.deepEqual(build.jobs.build.needs, ["guard", "validate"]);
+  for (const job of Object.values(build.jobs))
+    assert(!job.if?.includes("inputs.operation"));
+  const compose = load("compose-candidate");
+  assert(!compose.jobs.images && !compose.jobs.validate);
+  for (const job of Object.values(compose.jobs)) assert(!job.if);
+  assert(!JSON.stringify(compose).includes("docker/setup-buildx"));
+  const validate = load("validate");
+  assert(validate.jobs["image-checks"]);
+  assert(!validate.jobs["publish-images"]);
+  for (const w of ["validate", "compose-candidate", "promote"])
+    for (const name of expand(w))
+      assert(!["delivery", "package"].includes(name));
+});
+test("build pipeline refuses composition before any source lookup", () => {
+  const guard = path.resolve("tools/delivery/guard.mjs");
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [guard, "unused"], {
+        env: {
+          ...process.env,
+          CONTROL_BRANCH: "main",
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+          OPERATION: "compose",
+          BUILDER_WORKFLOW: "build-package.yml",
+        },
+        stdio: "pipe",
+      }),
+    (e) =>
+      e.stderr
+        .toString()
+        .includes("Operation does not belong to this pipeline"),
+  );
 });

@@ -1,0 +1,37 @@
+name: Create release candidate
+on:
+  workflow_call:
+    inputs:
+      chart:
+        type: string
+        default: ""
+        description: Optional chart path
+      project-checks:
+        type: string
+        default: "[]"
+        description: Optional native checks for non-Nx repositories
+    outputs:
+      package:
+        description: Published chart digest reference
+        value: ${{ jobs.package.outputs.package }}
+    secrets:
+      platform-read-token:
+        required: false
+permissions:
+  contents: read
+jobs:
+  package:
+    uses: $/.github/workflows/build-package.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      operation: release
+      chart: ${{ inputs.chart }}
+      project-checks: ${{ inputs.project-checks }}
+    secrets:
+      platform-read-token: ${{ secrets.platform-read-token }}

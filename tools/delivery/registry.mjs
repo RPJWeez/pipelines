@@ -19,8 +19,6 @@ export function verified(ref, policy, workflow, predicateType, source) {
     `oci://${ref}`,
     "--repo",
     policy.repository,
-    "--signer-workflow",
-    workflow,
     "--source-ref",
     policy.ref,
     "--predicate-type",
@@ -32,6 +30,11 @@ export function verified(ref, policy, workflow, predicateType, source) {
     "--limit",
     "100",
   ];
+  if (workflow) args.push("--signer-workflow", workflow);
+  else {
+    assert(policy.signerRepository, "Shared workflow repository required");
+    args.push("--signer-repo", policy.signerRepository);
+  }
   if (policy.revision) args.push("--signer-digest", policy.revision);
   if (source) args.push("--source-digest", source);
   const results = JSON.parse(
@@ -62,8 +65,12 @@ export function loadPackage(ref, d, repository, component = null) {
   assert.equal(reference(ref).name, expected, "wrong candidate repository");
   const results = verified(
     ref,
-    { repository, ref: `refs/heads/${d.releaseBranch}` },
-    `${d.pipelineRepository}/.github/workflows/package.yml`,
+    {
+      repository,
+      ref: `refs/heads/${d.releaseBranch}`,
+      signerRepository: d.pipelineRepository,
+    },
+    null,
     predicates.package,
   );
   const p = results.find(
@@ -72,6 +79,13 @@ export function loadPackage(ref, d, repository, component = null) {
   assert(p, "No package from the shared package workflow");
   validatePackage(p, d, repository, "release", component);
   approvedRevision(d.pipelineRepository, p.composer.pipelineRevision);
+  const builder = p.composer.builderWorkflow || "package.yml";
+  assert(
+    ["build-package.yml", "compose-candidate.yml", "package.yml"].includes(
+      builder,
+    ),
+    "Unexpected candidate workflow",
+  );
   const bound = verified(
     ref,
     {
@@ -79,7 +93,7 @@ export function loadPackage(ref, d, repository, component = null) {
       revision: p.composer.pipelineRevision,
       ref: `refs/heads/${d.releaseBranch}`,
     },
-    `${d.pipelineRepository}/.github/workflows/package.yml`,
+    `${d.pipelineRepository}/.github/workflows/${builder}`,
     predicates.package,
     p.composer.controlSource,
   );
@@ -95,6 +109,11 @@ export function verifyImages(p, d, repository, component = null) {
     : Object.values(p.images)) {
     const producer = image.producer;
     approvedRevision(d.pipelineRepository, producer.pipelineRevision);
+    const builder = producer.builderWorkflow || "package.yml";
+    assert(
+      ["build-package.yml", "package.yml"].includes(builder),
+      "Image must come from an image-building pipeline",
+    );
     const found = verified(
       image.reference,
       {
@@ -102,7 +121,7 @@ export function verifyImages(p, d, repository, component = null) {
         revision: producer.pipelineRevision,
         ref: `refs/heads/${d.releaseBranch}`,
       },
-      `${d.pipelineRepository}/.github/workflows/package.yml`,
+      `${d.pipelineRepository}/.github/workflows/${builder}`,
       predicates.image,
       producer.controlSource,
     );
@@ -122,7 +141,7 @@ export function verifyImages(p, d, repository, component = null) {
         revision: producer.pipelineRevision,
         ref: `refs/heads/${d.releaseBranch}`,
       },
-      `${d.pipelineRepository}/.github/workflows/package.yml`,
+      `${d.pipelineRepository}/.github/workflows/${builder}`,
       "https://spdx.dev/Document",
       producer.controlSource,
     );

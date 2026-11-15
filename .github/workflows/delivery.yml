@@ -1,4 +1,4 @@
-name: Application delivery
+name: Legacy delivery dispatcher
 on:
   workflow_call:
     inputs:
@@ -21,8 +21,8 @@ permissions:
   contents: read
 jobs:
   package:
-    if: fromJSON(inputs.request).operation != 'promote'
-    uses: $/.github/workflows/package.yml
+    if: fromJSON(inputs.request).operation != 'promote' && fromJSON(inputs.request).operation != 'compose'
+    uses: $/.github/workflows/build-package.yml
     permissions:
       contents: read
       actions: read
@@ -33,9 +33,6 @@ jobs:
     with:
       operation: ${{ fromJSON(inputs.request).operation == 'candidate' && 'release' || fromJSON(inputs.request).operation }}
       source-ref: ${{ fromJSON(inputs.request).source-ref }}
-      candidate: ${{ fromJSON(inputs.request).candidate }}
-      overrides: ${{ fromJSON(inputs.request).overrides }}
-      reason: ${{ fromJSON(inputs.request).reason }}
       chart: ${{ inputs.chart }}
       project-checks: ${{ inputs.project-checks }}
     secrets:
@@ -54,5 +51,22 @@ jobs:
       release-id: ${{ fromJSON(inputs.request).release-id }}
       qa-run: ${{ fromJSON(inputs.request).qa-run }}
       chart: ${{ inputs.chart }}
+    secrets:
+      platform-read-token: ${{ secrets.platform-read-token }}
+  compose:
+    if: fromJSON(inputs.request).operation == 'compose'
+    uses: $/.github/workflows/compose-candidate.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      chart: ${{ inputs.chart }}
+      candidate: ${{ fromJSON(inputs.request).candidate }}
+      overrides: ${{ fromJSON(inputs.request).overrides }}
+      reason: ${{ fromJSON(inputs.request).reason }}
     secrets:
       platform-read-token: ${{ secrets.platform-read-token }}
