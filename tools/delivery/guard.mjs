@@ -18,6 +18,17 @@ assert.equal(
 );
 const operation = process.env.OPERATION;
 assert(["dev", "release", "compose", "promote"].includes(operation));
+const builderWorkflow = process.env.BUILDER_WORKFLOW;
+const operations = {
+  "build-package.yml": ["dev", "release"],
+  "compose-candidate.yml": ["compose"],
+  "promote.yml": ["promote"],
+};
+if (builderWorkflow)
+  assert(
+    operations[builderWorkflow]?.includes(operation),
+    "Operation does not belong to this pipeline",
+  );
 const sourceRef = operation === "dev" ? process.env.SOURCE_REF : branchName;
 assert.match(sourceRef, /^[A-Za-z0-9][A-Za-z0-9/_.-]*$/);
 assert(!sourceRef.includes("..") && !sourceRef.startsWith("refs/"));
@@ -78,6 +89,7 @@ const composer = identity({
   workflow: process.env.GITHUB_WORKFLOW_REF,
   pipelineRepository: process.env.PIPELINE_REPOSITORY,
   pipelineRevision: process.env.PIPELINE_REVISION,
+  ...(builderWorkflow ? { builderWorkflow } : {}),
   run: process.env.GITHUB_RUN_ID,
   attempt: process.env.GITHUB_RUN_ATTEMPT,
 });

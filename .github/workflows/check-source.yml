@@ -1,0 +1,218 @@
+name: Native source checks
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: Application-owned candidate chart directory
+        type: string
+        required: false
+        default: ""
+      verify-command:
+        description: Optional additional whole-application check; native projects are discovered automatically
+        type: string
+        default: ""
+      project-checks:
+        description: Optional JSON array of named native commands for repositories without Nx or additional checks
+        type: string
+        default: "[]"
+      source-sha:
+        type: string
+        default: ""
+        description: Exact source commit; empty for ordinary validation events
+      full:
+        type: boolean
+        default: false
+        description: Validate complete source for manual package creation
+    outputs:
+      checks:
+        description: Native plan checks
+        value: ${{ jobs.plan.outputs.checks }}
+      checks_count:
+        description: Native plan checks_count
+        value: ${{ jobs.plan.outputs.checks_count }}
+      images:
+        description: Native plan images
+        value: ${{ jobs.plan.outputs.images }}
+      images_count:
+        description: Native plan images_count
+        value: ${{ jobs.plan.outputs.images_count }}
+      all_images:
+        description: Native plan all_images
+        value: ${{ jobs.plan.outputs.all_images }}
+    secrets:
+      platform-read-token:
+        required: false
+        description: Optional short-lived read-only token for private shared implementation repository
+permissions:
+  contents: read
+env:
+  VALIDATION_ONLY: "true"
+  SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+  NX_DAEMON: "false"
+  NX_NO_CLOUD: "true"
+  DELIVERY_ROOT: ${{ github.workspace }}/.work/delivery
+  DOCKER_BUILD_SUMMARY: "false"
+jobs:
+  plan:
+    name: Discover projects, affected checks and images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      checks: ${{ steps.select.outputs.checks }}
+      checks_count: ${{ steps.select.outputs.checks_count }}
+      images: ${{ steps.select.outputs.images }}
+      images_count: ${{ steps.select.outputs.images_count }}
+      all_images: ${{ steps.select.outputs.all_images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: ./.work/delivery/.github/actions/setup
+        with:
+          cache-enabled: "false"
+          cache-scope: validation-planning
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Discover native project checks and image targets
+        id: select
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          VERIFICATION_COMMAND: ${{ inputs.verify-command }}
+          PROJECT_CHECKS: ${{ inputs.project-checks }}
+          GITHUB_STEP_SUMMARY: /dev/null
+          VALIDATION_ONLY: "true"
+          FORCE_ALL: ${{ inputs.full || github.ref_name == github.event.repository.default_branch || github.event_name == 'merge_group' }}
+          SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+          AFFECTED_BASE: ${{ github.event.before }}
+          APP_CHART: ${{ inputs.chart }}
+        run: |-
+          mkdir -p .work
+          node "$DELIVERY_ROOT"/tools/pipeline/projects.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: results-plan
+          path: .work/plan.json
+          include-hidden-files: true
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+  validate:
+    name: ${{ matrix.label }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.checks) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Check out exact shared pipeline implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .work/delivery
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Install shared pipeline dependencies
+        run: npm ci --prefix "$DELIVERY_ROOT" --omit=dev --ignore-scripts
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: ./.work/delivery/.github/actions/setup
+        with:
+          cache-enabled: "false"
+          cache-scope: validation-project-${{ matrix.id }}
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - name: Run project build, tests and declared checks
+        id: check
+        env:
+          PROJECT_TASK: ${{ toJSON(matrix) }}
+          GITHUB_STEP_SUMMARY: /dev/null
+        shell: bash
+        run: |-
+          set -euo pipefail
+          mkdir -p .work
+          node "$DELIVERY_ROOT"/tools/pipeline/run-project.mjs 2>&1 | tee .work/validation.log
+      - name: Record validation result
+        if: always()
+        env:
+          CHECK_NAME: ${{ matrix.label }}
+          VALIDATION_ARTIFACT: project-${{ matrix.id }}
+          CHECK_RESULT: ${{ job.status }}
+          LINT_RESULT: ""
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: node "$DELIVERY_ROOT"/tools/pipeline/report.mjs validation "$CHECK_NAME" "$CHECK_RESULT" "$LINT_RESULT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: results-project-${{ matrix.id }}
+          path: .work/results
+          include-hidden-files: true
+          if-no-files-found: ignore
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: project-${{ matrix.id }}
+          path: |
+            .work/validation.log
+            **/target/surefire-reports/**
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+    if: needs.plan.outputs.checks_count != '0'
+  complete:
+    name: Native checks complete
+    needs:
+      - plan
+      - validate
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful native checks
+        env:
+          PLAN: ${{ needs.plan.result }}
+          CHECKS: ${{ needs.validate.result }}
+          COUNT: ${{ needs.plan.outputs.checks_count }}
+        run: |-
+          test "$PLAN" = success || exit 1
+          if [[ "$CHECKS" != success ]]; then
+            [[ "$COUNT" = 0 && "$CHECKS" = skipped ]] || exit 1
+          fi

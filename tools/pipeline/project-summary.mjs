@@ -33,9 +33,13 @@ export function renderProjectSummary({
   };
   const pr = run.event === "pull_request";
   const validationOnly = pr || run.validationOnly;
-  const failed = ["plan", "validate", "publish-images", "ci"].some((k) =>
-    ["failure", "cancelled"].includes(jobs[k]?.result),
-  );
+  const failed = [
+    "plan",
+    "validate",
+    "publish-images",
+    "image-checks",
+    "ci",
+  ].some((k) => ["failure", "cancelled"].includes(jobs[k]?.result));
   const publicationFailed = [
     "collect-images",
     "image-evidence",
