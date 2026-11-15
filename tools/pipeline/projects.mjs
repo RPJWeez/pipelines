@@ -24,10 +24,11 @@ export function projectPlan({
   checks = [],
   fallback = "",
   event = "pull_request",
+  allowEmptyImages = false,
 }) {
   const all = bake.group?.application?.targets;
   assert(
-    Array.isArray(all) && all.length > 0,
+    Array.isArray(all) && (allowEmptyImages || all.length > 0),
     "Bake application group must not be empty",
   );
   assert.equal(new Set(all).size, all.length, "duplicate image target");
@@ -166,9 +167,10 @@ if (
       encoding: "utf8",
       env: { ...process.env, GITHUB_STEP_SUMMARY: "/dev/null" },
     });
-  const bake = JSON.parse(
-    run(["docker", "buildx", "bake", "--print", "application"]),
-  );
+  const bake =
+    process.env.VALIDATION_ONLY === "true" && !fs.existsSync("docker-bake.hcl")
+      ? { group: { application: { targets: [] } }, target: {} }
+      : JSON.parse(run(["docker", "buildx", "bake", "--print", "application"]));
   let graph = { nodes: {} },
     selected = null;
   if (fs.existsSync("nx.json")) {
@@ -176,11 +178,14 @@ if (
     run(["npx", "nx", "show", "projects", "--json"]);
     run(["npx", "nx", "graph", "--file=.work/graph.json"]);
     graph = JSON.parse(fs.readFileSync(".work/graph.json")).graph;
-    if (process.env.GITHUB_EVENT_NAME === "pull_request") {
-      assert(
-        /^[a-f0-9]{40}$/.test(process.env.PR_BASE || ""),
-        "exact PR base required",
-      );
+    const base = process.env.PR_BASE || process.env.AFFECTED_BASE;
+    const canSelect =
+      process.env.GITHUB_EVENT_NAME === "pull_request" ||
+      (process.env.VALIDATION_ONLY === "true" &&
+        /^[a-f0-9]{40}$/.test(base || "") &&
+        !/^0+$/.test(base));
+    if (canSelect && process.env.FORCE_ALL !== "true") {
+      assert(/^[a-f0-9]{40}$/.test(base || ""), "exact PR base required");
       selected = JSON.parse(
         run([
           "npx",
@@ -188,8 +193,8 @@ if (
           "show",
           "projects",
           "--affected",
-          `--base=${process.env.PR_BASE}`,
-          `--head=${process.env.GITHUB_SHA}`,
+          `--base=${base}`,
+          `--head=${process.env.SOURCE_SHA || process.env.GITHUB_SHA}`,
           "--json",
         ]),
       );
@@ -210,11 +215,15 @@ if (
     mavenRoots,
     checks: JSON.parse(process.env.PROJECT_CHECKS || "[]"),
     fallback: process.env.VERIFICATION_COMMAND || "",
-    event: process.env.GITHUB_EVENT_NAME,
+    event:
+      process.env.VALIDATION_ONLY === "true"
+        ? "pull_request"
+        : process.env.GITHUB_EVENT_NAME,
+    allowEmptyImages: process.env.VALIDATION_ONLY === "true",
   });
   plan.run = runIdentity();
-  plan.head = process.env.GITHUB_SHA;
-  plan.base = process.env.PR_BASE || null;
+  plan.head = process.env.SOURCE_SHA || process.env.GITHUB_SHA;
+  plan.base = process.env.PR_BASE || process.env.AFFECTED_BASE || null;
   fs.writeFileSync(".work/plan.json", JSON.stringify(plan, null, 2));
   fs.writeFileSync(".work/bake.json", JSON.stringify(bake, null, 2));
   const output = {

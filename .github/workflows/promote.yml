@@ -1,0 +1,122 @@
+name: Reusable candidate-to-release promotion
+on:
+  workflow_call:
+    inputs:
+      descriptor:
+        type: string
+        default: .delivery/application.json
+        description: Protected application descriptor
+      candidate:
+        type: string
+        required: true
+      release-id:
+        type: string
+        required: true
+    secrets:
+      platform-read-token:
+        required: false
+        description: Optional short-lived read-only token for private shared implementation repository
+      certification-read-token:
+        required: false
+        description: Optional short-lived read-only token for private certification issuer
+permissions:
+  contents: read
+jobs:
+  guard:
+    name: Resolve trusted control and source
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ steps.guard.outputs.source }}
+      environment: ${{ steps.guard.outputs.environment }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .platform
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+      - run: npm ci --prefix .platform --omit=dev --ignore-scripts
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: .control
+          persist-credentials: false
+      - id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: promote
+          SOURCE_REF: ""
+          CANDIDATE: ${{ inputs.candidate }}
+          DESCRIPTOR: ${{ inputs.descriptor }}
+          PIPELINE_REPOSITORY: ${{ job.workflow_repository }}
+          PIPELINE_REVISION: ${{ job.workflow_sha }}
+          RELEASE_ID: ${{ inputs.release-id }}
+        run: node .platform/tools/delivery/guard.mjs ".control/$DESCRIPTOR" .guard
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-control
+          path: .guard
+          include-hidden-files: true
+  promote:
+    needs: guard
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.guard.outputs.environment }}
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .platform
+          persist-credentials: false
+          token: ${{ secrets.platform-read-token || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+      - run: npm ci --prefix .platform --omit=dev --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.guard.outputs.artifact }}
+          path: .guard
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.18.4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
+      - name: Authenticate registry verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: mkdir -p "$HOME/.docker" printf %s "$GH_TOKEN" | skopeo login --authfile "$HOME/.docker/config.json" ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate }}
+          RELEASE_ID: ${{ inputs.release-id }}
+          CERTIFICATION_READ_TOKEN: ${{ secrets.certification-read-token || github.token }}
+        run: node .platform/tools/delivery/promote.mjs .guard/descriptor.json .guard/composer.json .release
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ${{ steps.release.outputs.name }}
+          subject-digest: ${{ steps.release.outputs.digest }}
+          predicate-type: https://delivery-reference-platform.dev/release/v1
+          predicate-path: .release/release.json
+          push-to-registry: true
+          show-summary: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-designation
+          path: .release/release.json
+          include-hidden-files: true
+      - name: Report release designation
+        run: cat .release/summary.md >> "$GITHUB_STEP_SUMMARY"

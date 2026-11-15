@@ -1,5 +1,14 @@
 # Shared application delivery
 
+The new deliberate delivery topology is documented in [bootstrap/README.md](bootstrap/README.md).
+Applications use pinned `validate.yml`, `package.yml`, and `promote.yml` reusable workflows.
+Branch/PR/main validation never publishes. Manual dev/release creation builds images and
+packages charts in one operation; composition and release designation reuse exact digests.
+No packaging or promotion workflow deploys to Kubernetes.
+
+The existing `application.yml` interface below remains available for legacy pinned callers.
+Its merge-time publication behavior is not the behavior of the new entry points.
+
 This repository owns the reusable delivery pipeline and its implementation. Application
 repositories own source, native build manifests, Docker/Bake declarations, Compose/Helm
 runtime configuration, and business tests. They do not copy this repository's scripts.

@@ -4,7 +4,7 @@ export function runIdentity(env = process.env) {
     repository: env.GITHUB_REPOSITORY || "local",
     id: env.GITHUB_RUN_ID || "local",
     attempt: env.GITHUB_RUN_ATTEMPT || "1",
-    sha: env.GITHUB_SHA || "local",
+    sha: env.SOURCE_SHA || env.GITHUB_SHA || "local",
     event: env.GITHUB_EVENT_NAME || "local",
   };
 }
