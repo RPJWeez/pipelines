@@ -333,7 +333,9 @@ if (command === "record") {
     `| Code validation | ${status(validationState)} |`,
     `| Docker images | ${isPR ? (containerResult === "success" ? `Built from source for verification only${plan?.selected?.images?.length ? ` (${plan.selected.images.length} application images)` : ""}. Not pushed or retained as runnable image downloads.` : containerResult === "failure" ? "Source build failed. No images published." : "Verification build was not confirmed; check the job below.") : images.length ? `${images.length} image publication(s) recorded; see package and evidence links below.` : "No image publications recorded."} |`,
     `| Application candidate | ${run.validationOnly ? "Not packaged or published by validation." : isPR ? "Not packaged or published in PR runs." : candidate ? (publishingFailed ? "Published, but CI failed afterward; do not hand off this failed build attempt." : "Published; QA pending; certification pending.") : "No complete candidate handoff recorded."} |`,
-    "| Application deployment / QA / certification | Not performed by this CI workflow. |",
+    run.validationOnly
+      ? "| Deployment / QA | Run separately through CD. |"
+      : "| Application deployment / QA / certification | Not performed by this CI workflow. |",
     "",
     isPR
       ? "Docker builds check that the application compiles and packages from the checkout, without prebuilt host files or published private libraries. They do not deploy the application."

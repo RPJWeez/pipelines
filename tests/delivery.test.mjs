@@ -490,3 +490,35 @@ console.log(JSON.stringify(out));
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+test("failed discovery reports validation and CD without referring operators to a certification system", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-summary-"));
+  try {
+    fs.mkdirSync(path.join(dir, ".work"));
+    execFileSync(
+      process.execPath,
+      [path.resolve("tools/pipeline/report.mjs"), "summary"],
+      {
+        cwd: dir,
+        env: {
+          ...process.env,
+          VALIDATION_ONLY: "true",
+          GITHUB_REPOSITORY: "enterprise/orders",
+          GITHUB_SHA: sha,
+          GITHUB_RUN_ID: "99",
+          GITHUB_RUN_ATTEMPT: "1",
+          GITHUB_EVENT_NAME: "push",
+          JOB_RESULTS: JSON.stringify({
+            plan: { result: "failure" },
+            ci: { result: "failure" },
+          }),
+        },
+        stdio: "pipe",
+      },
+    );
+    const report = fs.readFileSync(path.join(dir, ".work/summary.md"), "utf8");
+    assert.match(report, /Deployment \/ QA/);
+    assert.doesNotMatch(report, /certification/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
