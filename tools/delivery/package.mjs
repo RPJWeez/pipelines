@@ -168,7 +168,7 @@ export function prepare(d, source, output, composer, trust, selected) {
         [
           "buildx",
           "bake",
-          `--allow=fs.write=${archive}`,
+          `--allow=fs.write=${path.dirname(archive)}`,
           "-f",
           "docker-bake.hcl",
           "-f",
