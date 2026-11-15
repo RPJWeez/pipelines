@@ -25,7 +25,7 @@ export function bind(d, values, images) {
   assert.deepEqual(
     Object.keys(workloads).sort(),
     expected,
-    "chart workload inventory differs from descriptor",
+    "Chart workloads do not match the image inventory",
   );
   for (const [name, c] of Object.entries(d.components))
     for (const workload of c.workloads) {
@@ -134,10 +134,10 @@ export function prepare(d, source, output, composer, trust, selected) {
     assert.deepEqual(
       [...bake.group.application.targets].sort(),
       Object.keys(d.components).sort(),
-      "Bake/descriptor inventory mismatch",
+      "Bake images and chart workloads disagree",
     );
     images = {};
-    for (const [name, component] of Object.entries(d.components)) {
+    for (const name of Object.keys(d.components)) {
       const archive = path.resolve(output, `${name}.tar`);
       // Override all exporters/caches/secrets/platforms from branch Bake definitions.
       const override = path.resolve(output, `${name}.bake.json`);
@@ -183,7 +183,6 @@ export function prepare(d, source, output, composer, trust, selected) {
       fs.rmSync(unpacked, { recursive: true });
       images[name] = {
         reference: `${registry}/${name}@${digest}`,
-        compatibility: component.compatibility,
         platforms: ["linux/amd64"],
         producer: composer,
       };
@@ -195,7 +194,6 @@ export function prepare(d, source, output, composer, trust, selected) {
     application: d.application,
     trust,
     chartName: d.chartName,
-    configCompatibility: d.configCompatibility,
     composer,
     images,
     ...(selected

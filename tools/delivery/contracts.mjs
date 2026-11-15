@@ -36,7 +36,7 @@ export function reference(ref) {
 }
 export function descriptor(d) {
   assert.equal(d.schemaVersion, 1, "unsupported descriptor version");
-  assert.match(d.application, nameRE);
+  assert.match(d.application, /^[a-z0-9][a-z0-9._-]{0,99}$/);
   relative(d.chart);
   assert.match(d.releaseBranch, /^[A-Za-z0-9][A-Za-z0-9/_.-]*$/);
   assert(!d.releaseBranch.includes(".."));
@@ -53,7 +53,6 @@ export function descriptor(d) {
   for (const [name, c] of Object.entries(d.components)) {
     assert.match(name, nameRE);
     assert(c && typeof c === "object");
-    assert.match(c.compatibility, /^[a-zA-Z0-9_.-]{1,128}$/);
     assert(Array.isArray(c.workloads) && c.workloads.length > 0);
     for (const w of c.workloads) assert.match(w, nameRE);
   }
@@ -63,37 +62,7 @@ export function descriptor(d) {
     workloads.length,
     "duplicate workload mapping",
   );
-  assert.match(d.configCompatibility, /^[a-zA-Z0-9_.-]{1,128}$/);
-  assert(
-    d.policy &&
-      Array.isArray(d.policy.trustedPipelineRevisions) &&
-      d.policy.trustedPipelineRevisions.length,
-  );
-  for (const sha of d.policy.trustedPipelineRevisions) assert.match(sha, shaRE);
-  assert.match(
-    d.policy.pipelineRepository,
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
-  );
-  assert.equal(d.policy.environment, "delivery-release");
-  assert(d.policy.certification, "certification policy required");
-  const c = d.policy.certification;
-  assert.match(c.repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
-  assert.match(
-    c.workflow,
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[a-zA-Z0-9_.-]+\.ya?ml$/,
-  );
-  assert.match(c.revision, shaRE);
-  relative(c.decisionsPath);
-  assert(
-    typeof c.predicateType === "string" &&
-      c.predicateType.startsWith("https://"),
-  );
-  assert(typeof c.policyVersion === "string" && c.policyVersion.length);
-  assert(
-    Number.isSafeInteger(c.maxAgeHours) &&
-      c.maxAgeHours > 0 &&
-      c.maxAgeHours <= 168,
-  );
+  assert.match(d.pipelineRepository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
   return d;
 }
 export function identity(i) {
@@ -123,19 +92,9 @@ export function validatePackage(
   assert.equal(p.kind, "package");
   assert.equal(p.application, d.application);
   assert.equal(p.trust, trust, "wrong artifact trust class");
-  if (!component)
-    assert.equal(
-      p.configCompatibility,
-      d.configCompatibility,
-      "configuration incompatibility",
-    );
   identity(p.composer);
   assert.equal(p.composer.repository, repository);
-  assert.equal(p.composer.pipelineRepository, d.policy.pipelineRepository);
-  assert(
-    d.policy.trustedPipelineRevisions.includes(p.composer.pipelineRevision),
-    "untrusted pipeline revision",
-  );
+  assert.equal(p.composer.pipelineRepository, d.pipelineRepository);
   assert(p.images && typeof p.images === "object" && !Array.isArray(p.images));
   if (component) {
     assert(
@@ -160,23 +119,10 @@ export function validatePackage(
       `ghcr.io/${repository.toLowerCase()}-${trust}/${name}`,
       "cross-application image",
     );
-    assert.equal(
-      image.compatibility,
-      d.components[name].compatibility,
-      `incompatible component: ${name}`,
-    );
     assert.deepEqual(image.platforms, ["linux/amd64"], "unsupported platform");
     identity(image.producer);
     assert.equal(image.producer.repository, repository);
-    assert.equal(
-      image.producer.pipelineRepository,
-      d.policy.pipelineRepository,
-    );
-    assert(
-      d.policy.trustedPipelineRevisions.includes(
-        image.producer.pipelineRevision,
-      ),
-    );
+    assert.equal(image.producer.pipelineRepository, d.pipelineRepository);
     if (trust === "release")
       assert.equal(image.producer.sourceRef, `refs/heads/${d.releaseBranch}`);
   }
@@ -209,39 +155,10 @@ export function compose(d, baseline, overrides, repository, composer, reason) {
   };
   return validatePackage(result, d, repository);
 }
-export function certification(predicate, candidate, policy, now = Date.now()) {
-  assert.equal(
-    predicate.candidate,
-    candidate,
-    "certification subject mismatch",
-  );
-  assert.equal(predicate.status, "certified");
-  assert.equal(
-    predicate.policyVersion,
-    policy.policyVersion,
-    "obsolete policy",
-  );
-  assert.equal(predicate.revoked, false);
-  const issued = Date.parse(predicate.issuedAt),
-    expiry = Date.parse(predicate.expiresAt);
-  assert(
-    Number.isFinite(issued) &&
-      issued <= now &&
-      now - issued <= policy.maxAgeHours * 3600000,
-    "stale certification",
-  );
-  assert(Number.isFinite(expiry) && expiry > now, "expired certification");
-  assert(
-    predicate.qa?.status === "passed" && predicate.qa.candidate === candidate,
-    "candidate-specific QA required",
-  );
-  return predicate;
-}
-
 export function existingDesignation(previous, proposed) {
   assert.equal(previous.schemaVersion, 1);
   assert.equal(previous.kind, "release");
-  for (const key of ["application", "candidate", "releaseId", "policyVersion"])
+  for (const key of ["application", "candidate", "releaseId", "qaRun"])
     assert.equal(
       previous[key],
       proposed[key],
@@ -251,3 +168,6 @@ export function existingDesignation(previous, proposed) {
   assert.equal(previous.promotedBy.repository, proposed.promotedBy.repository);
   return previous;
 }
+
+export const releaseRE =
+  /^(?!.*\.\.)(?!.*\.lock$)[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,126}[a-zA-Z0-9])?$/;

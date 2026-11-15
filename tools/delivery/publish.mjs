@@ -7,9 +7,8 @@ import {
   write,
   validatePackage,
   reference,
-  predicates,
 } from "./contracts.mjs";
-import { unpackChart, checkChart, inspectOCI } from "./package.mjs";
+import { unpackChart, inspectOCI } from "./package.mjs";
 import { run, verifyImages, sha256 } from "./registry.mjs";
 const [mode, dPath, composerPath, payload, output, target] =
   process.argv.slice(2);
@@ -78,7 +77,6 @@ if (mode === "image") {
     schemaVersion: 2,
     source: composer.source,
     reference: image.reference,
-    compatibility: image.compatibility,
     producer: image.producer,
   });
   fs.appendFileSync(
@@ -137,7 +135,6 @@ if (mode === "image") {
     source: composer.source,
     trust,
     qa: "pending",
-    certification: "pending",
   });
   fs.appendFileSync(
     process.env.GITHUB_OUTPUT,
@@ -145,6 +142,6 @@ if (mode === "image") {
   );
   fs.writeFileSync(
     path.join(output, "summary.md"),
-    `## ${trust === "dev" ? "Dev package" : "Release candidate"} published\n\n\`${ref}\`\n\nSource: \`${composer.source}\`. QA and certification pending. No deployment occurred.\n`,
+    `## ${trust === "dev" ? "Dev package" : "Release candidate"} published\n\n\`${ref}\`\n\nSource: \`${composer.source}\`. Ready for separate deployment and QA. No deployment occurred.\n`,
   );
 }

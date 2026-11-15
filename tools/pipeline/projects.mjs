@@ -213,12 +213,31 @@ if (
         fs.existsSync(pom) && !/<modules\b/.test(fs.readFileSync(pom, "utf8"))
       );
     });
+  const declaredChecks = JSON.parse(process.env.PROJECT_CHECKS || "[]");
+  if (
+    process.env.VALIDATION_ONLY === "true" &&
+    !fs.existsSync("nx.json") &&
+    !declaredChecks.length &&
+    !process.env.VERIFICATION_COMMAND
+  ) {
+    const { discoverLocal } = await import("../delivery/discover.mjs");
+    const app = discoverLocal(process.cwd(), {
+      repository: process.env.GITHUB_REPOSITORY,
+      branch: "main",
+      pipelineRepository: process.env.GITHUB_REPOSITORY,
+      chart: process.env.APP_CHART || "",
+    });
+    declaredChecks.push({
+      name: "chart",
+      command: "helm lint '" + app.chart.replaceAll("'", "'\"'\"'") + "'",
+    });
+  }
   const plan = projectPlan({
     graph,
     selected,
     bake,
     mavenRoots,
-    checks: JSON.parse(process.env.PROJECT_CHECKS || "[]"),
+    checks: declaredChecks,
     fallback: process.env.VERIFICATION_COMMAND || "",
     event:
       process.env.VALIDATION_ONLY === "true"

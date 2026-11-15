@@ -1,24 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import {
-  descriptor,
-  read,
-  write,
-  identity,
-  shaRE,
-  nameRE,
-  reference,
-  relative,
-} from "./contracts.mjs";
-import { run } from "./registry.mjs";
-const [descriptorPath, output] = process.argv.slice(2);
-relative(process.env.DESCRIPTOR || ".delivery/application.json");
-let d = descriptor(read(descriptorPath));
-assert.equal(
-  d.releaseBranch,
-  process.env.CONTROL_BRANCH,
-  "delivery control must use the repository default branch, not a branch-supplied policy override",
-);
+import { write, identity, shaRE, releaseRE, reference } from "./contracts.mjs";
+import { run, approvedRevision } from "./registry.mjs";
+import { discover } from "./discover.mjs";
+const [output] = process.argv.slice(2);
+const branchName = process.env.CONTROL_BRANCH;
+assert(branchName, "GitHub default branch is required");
 assert.equal(
   process.env.GITHUB_EVENT_NAME,
   "workflow_dispatch",
@@ -26,56 +13,65 @@ assert.equal(
 );
 assert.equal(
   process.env.GITHUB_REF,
-  `refs/heads/${d.releaseBranch}`,
-  "dispatch the workflow on protected release branch",
-);
-assert.equal(
-  process.env.GITHUB_REF_PROTECTED,
-  "true",
-  "protected release branch required",
+  `refs/heads/${branchName}`,
+  "Run delivery from the repository default branch",
 );
 const operation = process.env.OPERATION;
 assert(["dev", "release", "compose", "promote"].includes(operation));
-const sourceRef =
-  operation === "dev" ? process.env.SOURCE_REF : d.releaseBranch;
+const sourceRef = operation === "dev" ? process.env.SOURCE_REF : branchName;
 assert.match(sourceRef, /^[A-Za-z0-9][A-Za-z0-9/_.-]*$/);
 assert(!sourceRef.includes("..") && !sourceRef.startsWith("refs/"));
-// REST branch lookup is repository-scoped. Inputs cannot inject git/shell options.
+const repository = process.env.GITHUB_REPOSITORY;
 const branch = JSON.parse(
   run("gh", [
     "api",
-    `repos/${process.env.GITHUB_REPOSITORY}/branches/${encodeURIComponent(sourceRef)}`,
+    `repos/${repository}/branches/${encodeURIComponent(sourceRef)}`,
   ]),
 );
 assert.match(branch.commit.sha, shaRE);
-if (operation === "dev") {
-  const sourceDescriptor = JSON.parse(
-    run("gh", [
-      "api",
-      `repos/${process.env.GITHUB_REPOSITORY}/contents/${process.env.DESCRIPTOR || ".delivery/application.json"}?ref=${branch.commit.sha}`,
-    ]),
-  );
-  const declared = JSON.parse(
-    Buffer.from(sourceDescriptor.content, "base64").toString("utf8"),
-  );
-  // Branches may add dev components/charts without first merging those declarations.
-  // Application identity and every trust decision remain controlled by protected main.
-  d = descriptor({
-    ...declared,
-    application: d.application,
-    releaseBranch: d.releaseBranch,
-    policy: d.policy,
-  });
-}
-
 if (operation !== "dev")
   assert.equal(
     branch.commit.sha,
     process.env.GITHUB_SHA,
-    "main moved; dispatch again against its current commit",
+    "Main moved; run delivery again",
   );
+const tree = JSON.parse(
+  run("gh", [
+    "api",
+    `repos/${repository}/git/trees/${branch.commit.sha}?recursive=1`,
+  ]),
+);
+assert(
+  !tree.truncated,
+  "Repository tree is too large; use a chart-specific adapter",
+);
+const files = tree.tree
+  .filter((e) => e.type === "blob" && e.mode !== "120000")
+  .map((e) => e.path);
+const d = discover(
+  files,
+  (p) => {
+    const file = JSON.parse(
+      run("gh", [
+        "api",
+        `repos/${repository}/contents/${p}?ref=${branch.commit.sha}`,
+      ]),
+    );
+    return Buffer.from(file.content, "base64").toString("utf8");
+  },
+  {
+    repository,
+    branch: branchName,
+    pipelineRepository: process.env.PIPELINE_REPOSITORY,
+    chart: process.env.CHART || "",
+  },
+);
+approvedRevision(
+  process.env.PIPELINE_REPOSITORY,
+  process.env.PIPELINE_REVISION,
+);
 const composer = identity({
-  repository: process.env.GITHUB_REPOSITORY,
+  repository,
   source: branch.commit.sha,
   sourceRef: `refs/heads/${sourceRef}`,
   controlSource: process.env.GITHUB_SHA,
@@ -85,19 +81,11 @@ const composer = identity({
   run: process.env.GITHUB_RUN_ID,
   attempt: process.env.GITHUB_RUN_ATTEMPT,
 });
-assert.equal(composer.pipelineRepository, d.policy.pipelineRepository);
-assert(
-  d.policy.trustedPipelineRevisions.includes(composer.pipelineRevision),
-  "pipeline revision must be allowed by protected descriptor",
-);
 if (["compose", "promote"].includes(operation))
   reference(process.env.CANDIDATE);
-if (operation === "promote") assert.match(process.env.RELEASE_ID, nameRE);
+if (operation === "promote") assert.match(process.env.RELEASE_ID, releaseRE);
 fs.mkdirSync(output, { recursive: true });
 write(`${output}/descriptor.json`, d);
 write(`${output}/composer.json`, composer);
 if (process.env.GITHUB_OUTPUT)
-  fs.appendFileSync(
-    process.env.GITHUB_OUTPUT,
-    `source=${composer.source}\nenvironment=${operation === "dev" ? "delivery-dev" : operation === "promote" ? "delivery-promotion" : "delivery-release"}\n`,
-  );
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `source=${composer.source}\n`);
