@@ -15,6 +15,11 @@ const [descriptorPath, output] = process.argv.slice(2);
 relative(process.env.DESCRIPTOR || ".delivery/application.json");
 let d = descriptor(read(descriptorPath));
 assert.equal(
+  d.releaseBranch,
+  process.env.CONTROL_BRANCH,
+  "delivery control must use the repository default branch, not a branch-supplied policy override",
+);
+assert.equal(
   process.env.GITHUB_EVENT_NAME,
   "workflow_dispatch",
   "manual dispatch required",

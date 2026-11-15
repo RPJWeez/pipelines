@@ -58,6 +58,7 @@ jobs:
           PIPELINE_REPOSITORY: ${{ job.workflow_repository }}
           PIPELINE_REVISION: ${{ job.workflow_sha }}
           RELEASE_ID: ${{ inputs.release-id }}
+          CONTROL_BRANCH: ${{ github.event.repository.default_branch }}
         run: node .platform/tools/delivery/guard.mjs ".control/$DESCRIPTOR" .guard
       - id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

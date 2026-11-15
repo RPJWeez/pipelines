@@ -444,3 +444,35 @@ test("manual package creation validates native checks without duplicate containe
   );
   assert.equal(workflow.jobs.validate.with["container-proof"], false);
 });
+test("a protected feature branch cannot redefine itself as the delivery control branch", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-control-"));
+  try {
+    const desc = { ...structuredClone(d), releaseBranch: "protected-feature" };
+    fs.writeFileSync(path.join(dir, "application.json"), JSON.stringify(desc));
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [
+            path.resolve("tools/delivery/guard.mjs"),
+            path.join(dir, "application.json"),
+            path.join(dir, "output"),
+          ],
+          {
+            env: {
+              ...process.env,
+              CONTROL_BRANCH: "main",
+              GITHUB_REF: "refs/heads/protected-feature",
+              GITHUB_REF_PROTECTED: "true",
+              GITHUB_EVENT_NAME: "workflow_dispatch",
+              OPERATION: "release",
+            },
+            stdio: "pipe",
+          },
+        ),
+      (e) => e.stderr.toString().includes("repository default branch"),
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
