@@ -5,7 +5,8 @@ on:
       chart:
         description: Application-owned candidate chart directory
         type: string
-        required: true
+        required: false
+        default: ""
       verify-command:
         description: Optional additional whole-application check; native projects are discovered automatically
         type: string
@@ -24,7 +25,7 @@ on:
         description: Validate complete source for manual package creation
       deduplicate:
         type: boolean
-        default: false
+        default: true
         description: Skip a branch push when an open PR already validates it
       container-proof:
         type: boolean
@@ -97,6 +98,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
           AFFECTED_BASE: ${{ github.event.before }}
           SKIP_IMAGE_PROOF: ${{ !inputs.container-proof }}
+          APP_CHART: ${{ inputs.chart }}
         run: |-
           mkdir -p .work
           node "$DELIVERY_ROOT"/tools/pipeline/projects.mjs

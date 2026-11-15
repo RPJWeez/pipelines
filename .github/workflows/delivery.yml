@@ -1,0 +1,58 @@
+name: Application delivery
+on:
+  workflow_call:
+    inputs:
+      request:
+        type: string
+        required: true
+        description: Manual delivery form values
+      chart:
+        type: string
+        default: ""
+        description: Optional chart path when discovery is ambiguous
+      project-checks:
+        type: string
+        default: "[]"
+        description: Optional named native checks for repositories without Nx
+    secrets:
+      platform-read-token:
+        required: false
+permissions:
+  contents: read
+jobs:
+  package:
+    if: fromJSON(inputs.request).operation != 'promote'
+    uses: $/.github/workflows/package.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      operation: ${{ fromJSON(inputs.request).operation == 'candidate' && 'release' || fromJSON(inputs.request).operation }}
+      source-ref: ${{ fromJSON(inputs.request).source-ref }}
+      candidate: ${{ fromJSON(inputs.request).candidate }}
+      overrides: ${{ fromJSON(inputs.request).overrides }}
+      reason: ${{ fromJSON(inputs.request).reason }}
+      chart: ${{ inputs.chart }}
+      project-checks: ${{ inputs.project-checks }}
+    secrets:
+      platform-read-token: ${{ secrets.platform-read-token }}
+  promote:
+    if: fromJSON(inputs.request).operation == 'promote'
+    uses: $/.github/workflows/promote.yml
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      candidate: ${{ fromJSON(inputs.request).candidate }}
+      release-id: ${{ fromJSON(inputs.request).release-id }}
+      qa-run: ${{ fromJSON(inputs.request).qa-run }}
+      chart: ${{ inputs.chart }}
+    secrets:
+      platform-read-token: ${{ secrets.platform-read-token }}

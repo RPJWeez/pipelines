@@ -157,7 +157,9 @@ export function renderProjectSummary({
   }
   lines.push(
     "",
-    "QA, certification and deployment are not performed by this CI workflow.",
+    run.validationOnly
+      ? "Deployment and QA run separately from source validation."
+      : "QA, certification and deployment are not performed by this CI workflow.",
     "",
     "<details><summary>Selection, native commands and build/test evidence</summary>",
     "",

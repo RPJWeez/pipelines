@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { reference, predicates, read, validatePackage } from "./contracts.mjs";
+import { reference, predicates, validatePackage } from "./contracts.mjs";
 export const run = (cmd, args, options = {}) =>
   execFileSync(cmd, args, {
     encoding: "utf8",
@@ -23,8 +21,6 @@ export function verified(ref, policy, workflow, predicateType, source) {
     policy.repository,
     "--signer-workflow",
     workflow,
-    "--signer-digest",
-    policy.revision,
     "--source-ref",
     policy.ref,
     "--predicate-type",
@@ -36,6 +32,7 @@ export function verified(ref, policy, workflow, predicateType, source) {
     "--limit",
     "100",
   ];
+  if (policy.revision) args.push("--signer-digest", policy.revision);
   if (source) args.push("--source-digest", source);
   const results = JSON.parse(
     run(
@@ -63,23 +60,18 @@ export function verified(ref, policy, workflow, predicateType, source) {
 export function loadPackage(ref, d, repository, component = null) {
   const expected = `ghcr.io/${repository.toLowerCase()}-release-packages/${d.chartName}`;
   assert.equal(reference(ref).name, expected, "wrong candidate repository");
-  let p;
-  for (const revision of d.policy.trustedPipelineRevisions) {
-    try {
-      const results = verified(
-        ref,
-        { repository, revision, ref: `refs/heads/${d.releaseBranch}` },
-        `${d.policy.pipelineRepository}/.github/workflows/package.yml`,
-        predicates.package,
-      );
-      p = results.find((x) => x.composer?.pipelineRevision === revision);
-      if (p) break;
-    } catch {
-      /* Try only explicitly trusted revisions; fail closed below. */
-    }
-  }
-  assert(p, "no trusted package evidence");
+  const results = verified(
+    ref,
+    { repository, ref: `refs/heads/${d.releaseBranch}` },
+    `${d.pipelineRepository}/.github/workflows/package.yml`,
+    predicates.package,
+  );
+  const p = results.find(
+    (x) => x.composer?.pipelineRepository === d.pipelineRepository,
+  );
+  assert(p, "No package from the shared package workflow");
   validatePackage(p, d, repository, "release", component);
+  approvedRevision(d.pipelineRepository, p.composer.pipelineRevision);
   const bound = verified(
     ref,
     {
@@ -87,7 +79,7 @@ export function loadPackage(ref, d, repository, component = null) {
       revision: p.composer.pipelineRevision,
       ref: `refs/heads/${d.releaseBranch}`,
     },
-    `${d.policy.pipelineRepository}/.github/workflows/package.yml`,
+    `${d.pipelineRepository}/.github/workflows/package.yml`,
     predicates.package,
     p.composer.controlSource,
   );
@@ -102,6 +94,7 @@ export function verifyImages(p, d, repository, component = null) {
     ? [p.images[component]]
     : Object.values(p.images)) {
     const producer = image.producer;
+    approvedRevision(d.pipelineRepository, producer.pipelineRevision);
     const found = verified(
       image.reference,
       {
@@ -109,7 +102,7 @@ export function verifyImages(p, d, repository, component = null) {
         revision: producer.pipelineRevision,
         ref: `refs/heads/${d.releaseBranch}`,
       },
-      `${d.policy.pipelineRepository}/.github/workflows/package.yml`,
+      `${d.pipelineRepository}/.github/workflows/package.yml`,
       predicates.image,
       producer.controlSource,
     );
@@ -118,8 +111,7 @@ export function verifyImages(p, d, repository, component = null) {
         (x) =>
           JSON.stringify(x.producer) === JSON.stringify(producer) &&
           x.source === producer.source &&
-          x.reference === image.reference &&
-          x.compatibility === image.compatibility,
+          x.reference === image.reference,
       ),
       "image producer mismatch",
     );
@@ -130,19 +122,11 @@ export function verifyImages(p, d, repository, component = null) {
         revision: producer.pipelineRevision,
         ref: `refs/heads/${d.releaseBranch}`,
       },
-      `${d.policy.pipelineRepository}/.github/workflows/package.yml`,
+      `${d.pipelineRepository}/.github/workflows/package.yml`,
       "https://spdx.dev/Document",
       producer.controlSource,
     );
   }
-}
-export function pullChart(ref, destination) {
-  reference(ref);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "chart-pull-"));
-  const output = run("helm", ["pull", `oci://${ref}`, "--destination", tmp]);
-  const files = fs.readdirSync(tmp).filter((x) => x.endsWith(".tgz"));
-  assert.equal(files.length, 1, output);
-  fs.copyFileSync(path.join(tmp, files[0]), destination);
 }
 export function sha256(p) {
   const hash = createHash("sha256"),
@@ -156,4 +140,32 @@ export function sha256(p) {
     fs.closeSync(fd);
   }
   return "sha256:" + hash.digest("hex");
+}
+
+const reviewed = new Set();
+export function approvedRevision(repository, revision) {
+  const key = repository + "@" + revision;
+  if (reviewed.has(key)) return;
+  const options = {
+    env: {
+      ...process.env,
+      GH_TOKEN: process.env.PLATFORM_READ_TOKEN || process.env.GH_TOKEN,
+    },
+  };
+  const repo = JSON.parse(run("gh", ["api", `repos/${repository}`], options));
+  const comparison = JSON.parse(
+    run(
+      "gh",
+      [
+        "api",
+        `repos/${repository}/compare/${revision}...${encodeURIComponent(repo.default_branch)}`,
+      ],
+      options,
+    ),
+  );
+  assert(
+    ["ahead", "identical"].includes(comparison.status),
+    "Pipeline implementation must be merged into its default branch before publishing",
+  );
+  reviewed.add(key);
 }
