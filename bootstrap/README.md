@@ -44,7 +44,9 @@ bootstraps and packages both, checks overwrite refusal and generates an upgraded
 ## Human operations
 
 Always dispatch on main. For dev, supply `source-ref` as a same-repository branch name;
-that branch is resolved to one SHA. Fork packaging is not supported. Release source is
+that branch is resolved to one SHA. Dev chart/component declarations come from that
+exact branch descriptor, while application identity and trust policy remain from main.
+This permits testing new components before merging their declarations. Fork packaging is not supported. Release source is
 exact dispatch-main SHA; if main moved before resolution, dispatch again. Branch code
 runs only in read-only-permission build jobs. Fresh publishers validate data-only OCI
 and chart archives before uploads. No packaging workflow accesses Kubernetes.

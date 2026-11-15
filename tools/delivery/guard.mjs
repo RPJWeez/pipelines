@@ -13,7 +13,7 @@ import {
 import { run } from "./registry.mjs";
 const [descriptorPath, output] = process.argv.slice(2);
 relative(process.env.DESCRIPTOR || ".delivery/application.json");
-const d = descriptor(read(descriptorPath));
+let d = descriptor(read(descriptorPath));
 assert.equal(
   process.env.GITHUB_EVENT_NAME,
   "workflow_dispatch",
@@ -43,6 +43,26 @@ const branch = JSON.parse(
   ]),
 );
 assert.match(branch.commit.sha, shaRE);
+if (operation === "dev") {
+  const sourceDescriptor = JSON.parse(
+    run("gh", [
+      "api",
+      `repos/${process.env.GITHUB_REPOSITORY}/contents/${process.env.DESCRIPTOR || ".delivery/application.json"}?ref=${branch.commit.sha}`,
+    ]),
+  );
+  const declared = JSON.parse(
+    Buffer.from(sourceDescriptor.content, "base64").toString("utf8"),
+  );
+  // Branches may add dev components/charts without first merging those declarations.
+  // Application identity and every trust decision remain controlled by protected main.
+  d = descriptor({
+    ...declared,
+    application: d.application,
+    releaseBranch: d.releaseBranch,
+    policy: d.policy,
+  });
+}
+
 if (operation !== "dev")
   assert.equal(
     branch.commit.sha,
