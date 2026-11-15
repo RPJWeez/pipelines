@@ -15,8 +15,8 @@ const overrides = {};
 for (const [name, ref] of Object.entries(refs)) {
   assert(Object.hasOwn(d.components, name), "unknown component override");
   reference(ref);
-  const manifest = loadPackage(ref, d, composer.repository);
-  verifyImages(manifest, d, composer.repository);
+  const manifest = loadPackage(ref, d, composer.repository, name);
+  verifyImages(manifest, d, composer.repository, name);
   overrides[name] = { manifest };
 }
 const selected = compose(

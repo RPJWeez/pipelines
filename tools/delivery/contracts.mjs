@@ -111,17 +111,24 @@ export function identity(i) {
     assert.match(String(i[k]), /^[1-9][0-9]*$/);
   return i;
 }
-export function validatePackage(p, d, repository, trust = "release") {
+export function validatePackage(
+  p,
+  d,
+  repository,
+  trust = "release",
+  component = null,
+) {
   descriptor(d);
   assert.equal(p.schemaVersion, 2);
   assert.equal(p.kind, "package");
   assert.equal(p.application, d.application);
   assert.equal(p.trust, trust, "wrong artifact trust class");
-  assert.equal(
-    p.configCompatibility,
-    d.configCompatibility,
-    "configuration incompatibility",
-  );
+  if (!component)
+    assert.equal(
+      p.configCompatibility,
+      d.configCompatibility,
+      "configuration incompatibility",
+    );
   identity(p.composer);
   assert.equal(p.composer.repository, repository);
   assert.equal(p.composer.pipelineRepository, d.policy.pipelineRepository);
@@ -129,12 +136,24 @@ export function validatePackage(p, d, repository, trust = "release") {
     d.policy.trustedPipelineRevisions.includes(p.composer.pipelineRevision),
     "untrusted pipeline revision",
   );
-  assert.deepEqual(
-    Object.keys(p.images).sort(),
-    Object.keys(d.components).sort(),
-    "incomplete/extra component inventory",
-  );
-  for (const [name, image] of Object.entries(p.images)) {
+  assert(p.images && typeof p.images === "object" && !Array.isArray(p.images));
+  if (component) {
+    assert(
+      Object.hasOwn(d.components, component) &&
+        Object.hasOwn(p.images, component),
+      "selected component absent",
+    );
+  } else
+    assert.deepEqual(
+      Object.keys(p.images).sort(),
+      Object.keys(d.components).sort(),
+      "incomplete/extra component inventory",
+    );
+  // An override imports one image, not the historical package's other components/config.
+  const selectedImages = component
+    ? [[component, p.images[component]]]
+    : Object.entries(p.images);
+  for (const [name, image] of selectedImages) {
     const ref = reference(image.reference);
     assert.equal(
       ref.name,
@@ -178,7 +197,7 @@ export function compose(d, baseline, overrides, repository, composer, reason) {
   const images = structuredClone(baseline.images);
   for (const [name, selected] of Object.entries(overrides)) {
     assert(Object.hasOwn(images, name), `unknown component ${name}`);
-    validatePackage(selected.manifest, d, repository);
+    validatePackage(selected.manifest, d, repository, "release", name);
     images[name] = structuredClone(selected.manifest.images[name]);
   }
   const result = {

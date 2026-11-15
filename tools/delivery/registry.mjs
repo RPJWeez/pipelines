@@ -60,7 +60,7 @@ export function verified(ref, policy, workflow, predicateType, source) {
   assert(predicatesFound.length, "verified subject/predicate missing");
   return predicatesFound;
 }
-export function loadPackage(ref, d, repository) {
+export function loadPackage(ref, d, repository, component = null) {
   const expected = `ghcr.io/${repository.toLowerCase()}-release-packages/${d.chartName}`;
   assert.equal(reference(ref).name, expected, "wrong candidate repository");
   let p;
@@ -79,7 +79,7 @@ export function loadPackage(ref, d, repository) {
     }
   }
   assert(p, "no trusted package evidence");
-  validatePackage(p, d, repository);
+  validatePackage(p, d, repository, "release", component);
   const bound = verified(
     ref,
     {
@@ -97,8 +97,10 @@ export function loadPackage(ref, d, repository) {
   );
   return p;
 }
-export function verifyImages(p, d, repository) {
-  for (const image of Object.values(p.images)) {
+export function verifyImages(p, d, repository, component = null) {
+  for (const image of component
+    ? [p.images[component]]
+    : Object.values(p.images)) {
     const producer = image.producer;
     const found = verified(
       image.reference,

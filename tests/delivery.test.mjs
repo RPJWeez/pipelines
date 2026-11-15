@@ -476,3 +476,31 @@ test("a protected feature branch cannot redefine itself as the delivery control 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+test("older component selection does not import unrelated historical inventory or configuration", () => {
+  const older = structuredClone(pkg);
+  delete older.images.web;
+  older.configCompatibility = "historical-config";
+  older.images.api.producer = { ...producer, run: "2", source: "c".repeat(40) };
+  const result = compose(
+    d,
+    pkg,
+    { api: { manifest: older } },
+    "enterprise/orders",
+    { ...producer, run: "3" },
+    "Hold compatible API while shipping new web",
+  );
+  assert.equal(result.images.api.producer.run, "2");
+  assert.deepEqual(result.images.web, pkg.images.web);
+  assert.equal(result.configCompatibility, d.configCompatibility);
+  older.images.api.compatibility = "breaking-api";
+  assert.throws(() =>
+    compose(
+      d,
+      pkg,
+      { api: { manifest: older } },
+      "enterprise/orders",
+      producer,
+      "Hold compatible API while shipping new web",
+    ),
+  );
+});
